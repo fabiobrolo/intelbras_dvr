@@ -1,0 +1,296 @@
+set_video_color:
+  name: Set Video Color
+  description: Adjust picture settings (brightness, contrast, hue, saturation, acutance) for a camera channel.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Camera channel index (0-based).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 31
+          mode: box
+    brightness:
+      name: Brightness
+      description: Picture brightness (0-100).
+      required: false
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+    contrast:
+      name: Contrast
+      description: Picture contrast (0-100).
+      required: false
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+    hue:
+      name: Hue
+      description: Picture hue (0-100).
+      required: false
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+    saturation:
+      name: Saturation
+      description: Picture saturation (0-100).
+      required: false
+      default: 80
+      selector:
+        number:
+          min: 0
+          max: 100
+    acutance:
+      name: Acutance
+      description: Picture sharpness / acutance (0-15).
+      required: false
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 15
+    profile:
+      name: Profile
+      description: Color profile (0=day, 1=night, None=current profile).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 2
+
+set_monitor_split:
+  name: Set Monitor Split Mode
+  description: Change the display split mode on the DVR physical monitor output (HDMI/VGA).
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        text:
+    mode:
+      name: Split Mode
+      description: "Display mode: split1, split4, split8, split9, split16."
+      required: true
+      selector:
+        select:
+          translation_key: split_mode
+          options:
+            - split1
+            - split4
+            - split8
+            - split9
+            - split16
+    group:
+      name: Group
+      description: Channel group page (0 for first group, 1 for second, etc.).
+      required: false
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 10
+    channel:
+      name: Channel
+      description: Channel index for split1 mode.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 31
+
+mask_camera:
+  name: Mask Camera
+  description: Black out (mask) or restore a camera channel using picture settings.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Camera channel index (0-based).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 31
+    action:
+      name: Action
+      description: Choose whether to mask or unmask the channel.
+      required: true
+      selector:
+        select:
+          translation_key: mask_action
+          options:
+            - mask
+            - unmask
+
+reboot:
+  name: Reboot DVR
+  description: Send a system reboot command to the Intelbras DVR.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        text:
+
+record_camera:
+  name: Record Camera
+  description: Temporarily switch camera channel to continuous recording for a given duration, then revert to schedule.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Camera channel index (0-based).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 31
+    duration:
+      name: Duration
+      description: Recording duration in seconds before returning to scheduled recording.
+      required: false
+      default: 60
+      selector:
+        number:
+          min: 5
+          max: 3600
+          unit_of_measurement: seconds
+
+ptz_move:
+  name: PTZ Move
+  description: Move a PTZ camera in a given direction with automatic stop after duration.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Camera channel index (0-based).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 31
+    direction:
+      name: Direction
+      description: Direction to move.
+      required: true
+      selector:
+        select:
+          translation_key: ptz_direction
+          options:
+            - up
+            - down
+            - left
+            - right
+            - zoom_in
+            - zoom_out
+    speed:
+      name: Speed
+      description: Movement speed (1 to 8).
+      required: false
+      default: 4
+      selector:
+        number:
+          min: 1
+          max: 8
+    duration:
+      name: Duration
+      description: Movement duration in seconds before stopping.
+      required: false
+      default: 0.5
+      selector:
+        number:
+          min: 0.1
+          max: 60.0
+          step: 0.1
+          unit_of_measurement: seconds
+
+ptz_stop:
+  name: PTZ Stop
+  description: Immediately stop ongoing PTZ movement.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Camera channel index (0-based).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 31
+    direction:
+      name: Direction
+      description: Direction to stop.
+      required: true
+      selector:
+        select:
+          translation_key: ptz_direction
+          options:
+            - up
+            - down
+            - left
+            - right
+            - zoom_in
+            - zoom_out
+
+ptz_preset:
+  name: PTZ Preset
+  description: Move a PTZ camera to a configured preset position index.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        text:
+    channel:
+      name: Channel
+      description: Camera channel index (0-based).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 31
+    preset:
+      name: Preset Index
+      description: Preset number to go to (1-based index).
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 255
+

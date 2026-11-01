@@ -1,0 +1,399 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Conectar ao DVR Intelbras",
+        "description": "Informe os dados de conexão do seu DVR Intelbras.",
+        "data": {
+          "host": "Endereço IP ou Host",
+          "username": "Usuário",
+          "password": "Senha",
+          "http_port": "Porta HTTP",
+          "rtsp_port": "Porta RTSP"
+        }
+      },
+      "channels": {
+        "title": "Selecionar Câmeras",
+        "description": "Selecione os canais de câmera que deseja adicionar ao Home Assistant. Detectados {found} canais ({ptz} com suporte a PTZ).",
+        "data": {
+          "channels": "Câmeras"
+        }
+      },
+      "features": {
+        "title": "Recursos dos Canais",
+        "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras selecionadas.",
+        "data": {
+          "features": "Recursos Ativados"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Falha ao conectar ao DVR. Verifique o endereço IP e a porta HTTP.",
+      "invalid_auth": "Falha na autenticação. Verifique o usuário e a senha.",
+      "no_channels_selected": "Selecione pelo menos um canal de câmera.",
+      "no_channels": "Nenhum canal de câmera encontrado no DVR.",
+      "unknown": "Ocorreu um erro inesperado."
+    },
+    "abort": {
+      "already_configured": "Este DVR já está configurado."
+    }
+  },
+  "options": {
+    "step": {
+      "channels": {
+        "title": "Gerenciar Câmeras",
+        "description": "Selecione os canais de câmera para ativar ou desativar no Home Assistant. Detectados {found} canais ({ptz} com suporte a PTZ).",
+        "data": {
+          "channels": "Câmeras"
+        }
+      },
+      "features": {
+        "title": "Recursos dos Canais",
+        "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras configuradas.",
+        "data": {
+          "features": "Recursos Ativados"
+        }
+      }
+    },
+    "error": {
+      "no_channels_selected": "Selecione pelo menos um canal de câmera."
+    }
+  },
+  "selector": {
+    "features": {
+      "options": {
+        "stream_main": "Fluxo principal (RTSP alta resolução)",
+        "stream_sub": "Fluxo secundário (RTSP baixa resolução)",
+        "snapshot": "Instantâneo (entidade de imagem estática)",
+        "motion": "Sensor de detecção de movimento",
+        "video_loss": "Sensor de perda de vídeo",
+        "video_blind": "Sensor de mascaramento de vídeo",
+        "mask": "Interruptor de máscara de privacidade",
+        "video_color": "Controles de imagem (brilho, contraste, etc.)",
+        "ptz": "Controle PTZ (pan / tilt / zoom)",
+        "recording": "Interruptor de gravação contínua"
+      }
+    },
+    "split_mode": {
+      "options": {
+        "split1": "1 câmera (1x1)",
+        "split4": "4 câmeras (2x2)",
+        "split8": "8 câmeras (1+7)",
+        "split9": "9 câmeras (3x3)",
+        "split16": "16 câmeras (4x4)"
+      }
+    },
+    "mask_action": {
+      "options": {
+        "mask": "Mascarar (escurecer vídeo)",
+        "unmask": "Desmascarar (restaurar vídeo)"
+      }
+    },
+    "ptz_direction": {
+      "options": {
+        "up": "Para cima",
+        "down": "Para baixo",
+        "left": "Para esquerda",
+        "right": "Para direita",
+        "zoom_in": "Mais zoom",
+        "zoom_out": "Menos zoom"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "motion": {
+        "name": "Movimento"
+      },
+      "video_loss": {
+        "name": "Perda de vídeo"
+      },
+      "video_blind": {
+        "name": "Mascaramento de vídeo"
+      },
+      "event_stream": {
+        "name": "Stream de eventos em tempo real"
+      }
+    },
+    "button": {
+      "dvr_reboot": {
+        "name": "Reiniciar DVR"
+      },
+      "dvr_refresh": {
+        "name": "Atualizar dados"
+      },
+      "camera_refresh": {
+        "name": "Atualizar câmera"
+      },
+      "camera_reset_defaults": {
+        "name": "Redefinir padrões de imagem"
+      },
+      "ptz_up": {
+        "name": "PTZ para cima"
+      },
+      "ptz_down": {
+        "name": "PTZ para baixo"
+      },
+      "ptz_left": {
+        "name": "PTZ para esquerda"
+      },
+      "ptz_right": {
+        "name": "PTZ para direita"
+      },
+      "ptz_zoom_in": {
+        "name": "PTZ mais zoom"
+      },
+      "ptz_zoom_out": {
+        "name": "PTZ menos zoom"
+      }
+    },
+    "camera": {
+      "sub_stream": {
+        "name": "Fluxo secundário"
+      },
+      "snapshot": {
+        "name": "Instantâneo"
+      }
+    },
+    "number": {
+      "brightness": {
+        "name": "Brilho"
+      },
+      "contrast": {
+        "name": "Contraste"
+      },
+      "hue": {
+        "name": "Matiz"
+      },
+      "saturation": {
+        "name": "Saturação"
+      },
+      "acutance": {
+        "name": "Nitidez"
+      },
+      "snapshot_interval": {
+        "name": "Taxa de atualização dos instantâneos"
+      }
+    },
+    "select": {
+      "monitor_select": {
+        "name": "Saída de monitor"
+      },
+      "ptz_preset": {
+        "name": "Predefinição PTZ"
+      },
+      "record_mode": {
+        "name": "Modo de gravação",
+        "state": {
+          "schedule": "Agendado",
+          "manual": "Manual / Contínuo",
+          "off": "Desativado"
+        }
+      }
+    },
+    "sensor": {
+      "dvr_status": {
+        "name": "Status",
+        "state": {
+          "online": "Online",
+          "offline": "Offline"
+        }
+      },
+      "disk_usage": {
+        "name": "Uso do disco"
+      },
+      "monitor_mode": {
+        "name": "Modo do monitor"
+      },
+      "ip_address": {
+        "name": "Endereço IP"
+      },
+      "response_time": {
+        "name": "Tempo de resposta da API"
+      },
+      "consecutive_failures": {
+        "name": "Falhas consecutivas de conexão"
+      }
+    },
+    "switch": {
+      "privacy_mask": {
+        "name": "Máscara de privacidade"
+      }
+    },
+    "update": {
+      "dvr_firmware_update": {
+        "name": "Atualização de firmware"
+      }
+    }
+  },
+  "services": {
+    "set_video_color": {
+      "name": "Definir cor do vídeo",
+      "description": "Ajusta as configurações de imagem de um canal de câmera.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Configuração",
+          "description": "O ID de entrada de configuração do DVR (opcional se houver apenas um DVR configurado)."
+        },
+        "channel": {
+          "name": "Canal",
+          "description": "Índice do canal da câmera (base 0)."
+        },
+        "brightness": {
+          "name": "Brilho",
+          "description": "Brilho da imagem (0-100)."
+        },
+        "contrast": {
+          "name": "Contraste",
+          "description": "Contraste da imagem (0-100)."
+        },
+        "hue": {
+          "name": "Matiz",
+          "description": "Matiz da imagem (0-100)."
+        },
+        "saturation": {
+          "name": "Saturação",
+          "description": "Saturação da imagem (0-100)."
+        },
+        "acutance": {
+          "name": "Nitidez",
+          "description": "Nitidez da imagem (0-15)."
+        },
+        "profile": {
+          "name": "Perfil",
+          "description": "Perfil de cor (0=dia, 1=noite, None=perfil atual)."
+        }
+      }
+    },
+    "set_monitor_split": {
+      "name": "Definir modo de divisão do monitor",
+      "description": "Altera o modo de visualização na saída física de monitor HDMI/VGA.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Configuração",
+          "description": "O ID de entrada de configuração do DVR."
+        },
+        "mode": {
+          "name": "Modo de Divisão",
+          "description": "Modo de exibição (ex: split1, split4, split8, split16)."
+        },
+        "group": {
+          "name": "Grupo",
+          "description": "Página de grupos de canais (0 para o primeiro grupo)."
+        },
+        "channel": {
+          "name": "Canal",
+          "description": "Índice do canal para o modo split1."
+        }
+      }
+    },
+    "mask_camera": {
+      "name": "Mascarar câmera",
+      "description": "Escurece ou restaura um canal de câmera usando ajustes de imagem.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Configuração",
+          "description": "O ID de entrada de configuração do DVR."
+        },
+        "channel": {
+          "name": "Canal",
+          "description": "Índice do canal da câmera (base 0)."
+        },
+        "action": {
+          "name": "Ação",
+          "description": "Escolha se deseja mascarar ou desmascarar o canal."
+        }
+      }
+    },
+    "reboot": {
+      "name": "Reiniciar DVR",
+      "description": "Envia um comando de reinicialização para o DVR.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Configuração",
+          "description": "O ID de entrada de configuração do DVR."
+        }
+      }
+    },
+    "record_camera": {
+      "name": "Gravar câmera",
+      "description": "Alterna temporariamente uma câmera para gravação contínua manual.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Configuração",
+          "description": "O ID de entrada de configuração do DVR."
+        },
+        "channel": {
+          "name": "Canal",
+          "description": "Índice do canal da câmera (base 0)."
+        },
+        "duration": {
+          "name": "Duração",
+          "description": "Duração da gravação em segundos."
+        }
+      }
+    },
+    "ptz_move": {
+      "name": "Movimento PTZ",
+      "description": "Move uma câmera PTZ em uma direção.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Configuração",
+          "description": "O ID de entrada de configuração do DVR."
+        },
+        "channel": {
+          "name": "Canal",
+          "description": "Índice do canal da câmera (base 0)."
+        },
+        "direction": {
+          "name": "Direção",
+          "description": "Direção do movimento."
+        },
+        "speed": {
+          "name": "Velocidade",
+          "description": "Velocidade do movimento (1 a 8)."
+        },
+        "duration": {
+          "name": "Duração",
+          "description": "Duração do movimento em segundos."
+        }
+      }
+    },
+    "ptz_stop": {
+      "name": "Parar PTZ",
+      "description": "Para o movimento da câmera PTZ.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Configuração",
+          "description": "O ID de entrada de configuração do DVR."
+        },
+        "channel": {
+          "name": "Canal",
+          "description": "Índice do canal da câmera (base 0)."
+        },
+        "direction": {
+          "name": "Direção",
+          "description": "Direção do movimento a interromper."
+        }
+      }
+    },
+    "ptz_preset": {
+      "name": "Predefinição PTZ",
+      "description": "Move a câmera PTZ para uma posição predefinida salva.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Configuração",
+          "description": "O ID de entrada de configuração do DVR."
+        },
+        "channel": {
+          "name": "Canal",
+          "description": "Índice do canal da câmera (base 0)."
+        },
+        "preset": {
+          "name": "Índice da Predefinição",
+          "description": "Número da predefinição para posicionar (índice base 1)."
+        }
+      }
+    }
+  }
+}
