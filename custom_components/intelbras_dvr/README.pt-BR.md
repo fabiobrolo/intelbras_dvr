@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.3.2-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.3.3-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -20,7 +20,7 @@ Desenvolvida seguindo os padrões modernos do Home Assistant (HA 2024.4+ / 2026.
 
 ---
 
-## 🚀 Alterações Recentes & Melhorias de Arquitetura (v0.3.2)
+## 🚀 Alterações Recentes & Melhorias de Arquitetura (v0.3.3)
 
 1. **Descoberta 100% Dinâmica de Hardware e Configurações:**
    * Consulta automática às tabelas CGI do DVR (`Encode`, `RemoteDevice`, `VideoIn`, `ChannelTitle`, `ptz.cgi?action=getPresets`) para identificar em tempo de execução canais analógicos e IP ativos, suporte real a PTZ, codecs de áudio e perfis de vídeo.
