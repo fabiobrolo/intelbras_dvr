@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.3.3-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.3.4-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -20,7 +20,7 @@ Designed following modern Home Assistant standards (HA 2024.4+ / 2026.x / Python
 
 ---
 
-## 🚀 Recent Improvements & Architectural Upgrades (v0.3.3)
+## 🚀 Recent Improvements & Architectural Upgrades (v0.3.4)
 
 1. **100% Dynamic Hardware & Configuration Discovery:**
    * Automatically queries DVR CGI (`Encode`, `RemoteDevice`, `VideoIn`, `ChannelTitle`, `ptz.cgi?action=getPresets`) to dynamically detect active analog and IP channels, PTZ capability, audio codecs, and video profiles.
