@@ -1,16 +1,21 @@
 """Config flow and options flow for the Intelbras DVR integration."""
 from __future__ import annotations
 
-import asyncio
+from collections.abc import Mapping
 import logging
 from typing import Any
 
 import voluptuous as vol
 
-from homeassistant import config_entries
-from homeassistant.data_entry_flow import AbortFlow
-from homeassistant.core import callback
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import callback
+from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.selector import (
     SelectOptionDict,
@@ -36,11 +41,8 @@ from .dvr import DVRAuthError, DVRConnectionError, IntelbrasClient
 
 _LOGGER = logging.getLogger(__name__)
 
-# Features available to every channel (before PTZ detection)
-_BASE_FEATURES = [f for f in ALL_CAMERA_FEATURES if f not in PTZ_ONLY_FEATURES]
 
-
-class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Intelbras DVR."""
 
     VERSION = 2
@@ -58,6 +60,7 @@ class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._ptz_channels: list[int] = []
         self._onvif_channels: set[int] = set()
         self._selected_channels: list[int] = []
+        self._reauth_entry: ConfigEntry | None = None
 
     # ------------------------------------------------------------------
     # Step 1 – credentials
@@ -65,7 +68,7 @@ class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> ConfigFlowResult:
         """Handle the initial step: DVR credentials."""
         errors: dict[str, str] = {}
 
@@ -89,37 +92,26 @@ class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     errors["base"] = "cannot_connect"
                 else:
                     self._serial = info["serialNumber"]
-                    model = info.get("updateSerial", "DVR")
+                    model = info.get("updateSerial") or info.get("deviceType") or "DVR"
                     self._title = f"Intelbras {model} ({self._host})"
 
                     await self.async_set_unique_id(self._serial)
-                    self._abort_if_unique_id_configured(updates={CONF_HOST: self._host})
+                    self._abort_if_unique_id_configured(
+                        updates={
+                            CONF_HOST: self._host,
+                            CONF_HTTP_PORT: self._http_port,
+                            CONF_RTSP_PORT: self._rtsp_port,
+                        }
+                    )
 
-                    self._available_channels = await client.get_channel_titles()
+                    (
+                        self._available_channels,
+                        self._ptz_channels,
+                        self._onvif_channels,
+                    ) = await client.async_discover_channels()
                     if not self._available_channels:
                         errors["base"] = "no_channels"
                     else:
-                        # Detect PTZ-capable and ONVIF channels in parallel
-                        detect_ptz = getattr(client, "detect_ptz_channels", None)
-                        ptz_coro = (
-                            detect_ptz(list(self._available_channels.keys()))
-                            if detect_ptz
-                            else None
-                        )
-                        get_onvif = getattr(client, "get_onvif_channels", None)
-                        onvif_coro = get_onvif() if get_onvif else None
-
-                        (
-                            self._ptz_channels,
-                            self._onvif_channels,
-                        ) = await _gather_ignore_errors(
-                            ptz_coro,
-                            onvif_coro,
-                            defaults=([], set()),
-                        )
-                        self._ptz_channels = [
-                            ch for ch in self._ptz_channels if ch in self._available_channels
-                        ]
                         return await self.async_step_channels()
             except AbortFlow:
                 raise
@@ -137,11 +129,11 @@ class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_HOST): str,
-                    vol.Required(CONF_USERNAME): str,
+                    vol.Required(CONF_HOST, default=self._host): str,
+                    vol.Required(CONF_USERNAME, default=self._username): str,
                     vol.Required(CONF_PASSWORD): str,
-                    vol.Optional(CONF_HTTP_PORT, default=DEFAULT_HTTP_PORT): int,
-                    vol.Optional(CONF_RTSP_PORT, default=DEFAULT_RTSP_PORT): int,
+                    vol.Optional(CONF_HTTP_PORT, default=self._http_port): int,
+                    vol.Optional(CONF_RTSP_PORT, default=self._rtsp_port): int,
                 }
             ),
             errors=errors,
@@ -153,12 +145,11 @@ class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_channels(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> ConfigFlowResult:
         """Let the user select which camera channels to configure."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # SelectSelector returns a list; guard against None
             selected: list[str] = user_input.get(CONF_CHANNELS) or []
             if not selected:
                 errors[CONF_CHANNELS] = "no_channels_selected"
@@ -195,7 +186,7 @@ class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_features(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> ConfigFlowResult:
         """Let the user choose which features to enable for the selected cameras."""
         has_ptz = any(ch in self._ptz_channels for ch in self._selected_channels)
 
@@ -211,7 +202,8 @@ class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_RTSP_PORT: self._rtsp_port,
                     CONF_CHANNELS: self._selected_channels,
                     CONF_PTZ_CHANNELS: [
-                        ch for ch in self._ptz_channels
+                        ch
+                        for ch in self._ptz_channels
                         if ch in self._selected_channels
                     ],
                     CONF_FEATURES: {
@@ -236,7 +228,9 @@ class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="features",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(CONF_FEATURES, default=default_features): SelectSelector(
+                    vol.Optional(
+                        CONF_FEATURES, default=default_features
+                    ): SelectSelector(
                         SelectSelectorConfig(
                             options=feature_options,
                             translation_key="features",
@@ -254,25 +248,160 @@ class IntelbrasDVRConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             },
         )
 
+    # ------------------------------------------------------------------
+    # Reauthentication & Reconfiguration flows
+    # ------------------------------------------------------------------
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle reauthentication when DVR credentials become invalid."""
+        self._reauth_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm new credentials for the DVR."""
+        errors: dict[str, str] = {}
+        entry = self._reauth_entry
+        if entry is None:
+            return self.async_abort(reason="unknown")
+
+        if user_input is not None:
+            username = user_input[CONF_USERNAME].strip()
+            password = user_input[CONF_PASSWORD].strip()
+            client = IntelbrasClient(
+                host=entry.data[CONF_HOST],
+                username=username,
+                password=password,
+                http_port=entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT),
+                rtsp_port=entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
+            )
+            try:
+                info = await client.get_system_info()
+                if not info:
+                    errors["base"] = "cannot_connect"
+                else:
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates={
+                            CONF_USERNAME: username,
+                            CONF_PASSWORD: password,
+                        },
+                    )
+            except DVRAuthError:
+                errors["base"] = "invalid_auth"
+            except DVRConnectionError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Unexpected error during reauth")
+                errors["base"] = "unknown"
+            finally:
+                await client.close()
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_USERNAME, default=entry.data.get(CONF_USERNAME, "")
+                    ): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
+            description_placeholders={"host": str(entry.data.get(CONF_HOST, ""))},
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Allow reconfiguring host, ports, and credentials from the UI."""
+        errors: dict[str, str] = {}
+        entry = self._get_reconfigure_entry()
+
+        if user_input is not None:
+            host = user_input[CONF_HOST].strip()
+            username = user_input[CONF_USERNAME].strip()
+            password = user_input[CONF_PASSWORD].strip()
+            http_port = user_input.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT)
+            rtsp_port = user_input.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT)
+
+            client = IntelbrasClient(
+                host=host,
+                username=username,
+                password=password,
+                http_port=http_port,
+                rtsp_port=rtsp_port,
+            )
+            try:
+                info = await client.get_system_info()
+                if not info:
+                    errors["base"] = "cannot_connect"
+                else:
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        data_updates={
+                            CONF_HOST: host,
+                            CONF_USERNAME: username,
+                            CONF_PASSWORD: password,
+                            CONF_HTTP_PORT: http_port,
+                            CONF_RTSP_PORT: rtsp_port,
+                        },
+                    )
+            except DVRAuthError:
+                errors["base"] = "invalid_auth"
+            except DVRConnectionError:
+                errors["base"] = "cannot_connect"
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Unexpected error during reconfigure")
+                errors["base"] = "unknown"
+            finally:
+                await client.close()
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_HOST, default=entry.data.get(CONF_HOST, "")
+                    ): str,
+                    vol.Required(
+                        CONF_USERNAME, default=entry.data.get(CONF_USERNAME, "")
+                    ): str,
+                    vol.Required(
+                        CONF_PASSWORD, default=entry.data.get(CONF_PASSWORD, "")
+                    ): str,
+                    vol.Optional(
+                        CONF_HTTP_PORT,
+                        default=entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT),
+                    ): int,
+                    vol.Optional(
+                        CONF_RTSP_PORT,
+                        default=entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
+                    ): int,
+                }
+            ),
+            errors=errors,
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
+        config_entry: ConfigEntry,
     ) -> IntelbrasDVROptionsFlow:
         """Return the options flow handler."""
-        return IntelbrasDVROptionsFlow(config_entry)
+        return IntelbrasDVROptionsFlow()
 
 
-class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
+class IntelbrasDVROptionsFlow(OptionsFlow):
     """Allow reconfiguring cameras and features without reinstalling."""
 
-    def __init__(
-        self, config_entry: config_entries.ConfigEntry | None = None
-    ) -> None:
+    def __init__(self) -> None:
         """Initialise the options flow."""
-        super().__init__()
-        if config_entry is not None:
-            self._config_entry = config_entry
         self._available_channels: dict[int, str] = {}
         self._ptz_channels: list[int] = []
         self._onvif_channels: set[int] = set()
@@ -280,7 +409,7 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> ConfigFlowResult:
         """Re-query the DVR for available channels, PTZ, and ONVIF capabilities, then proceed."""
         client = IntelbrasClient(
             host=self.config_entry.data[CONF_HOST],
@@ -299,37 +428,23 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
 
         try:
             try:
-                self._available_channels = await client.get_channel_titles()
+                (
+                    self._available_channels,
+                    self._ptz_channels,
+                    self._onvif_channels,
+                ) = await client.async_discover_channels()
             except Exception:  # noqa: BLE001
                 self._available_channels = {}
+                self._ptz_channels = []
+                self._onvif_channels = set()
+
             if not self._available_channels:
                 self._available_channels = fallback_channels
-
-            candidate_channels = list(self._available_channels.keys())
-            detect_ptz = getattr(client, "detect_ptz_channels", None)
-            ptz_coro = detect_ptz(candidate_channels) if detect_ptz else None
-
-            get_onvif = getattr(client, "get_onvif_channels", None)
-            onvif_coro = get_onvif() if get_onvif else None
-
-            (
-                self._ptz_channels,
-                self._onvif_channels,
-            ) = await _gather_ignore_errors(
-                ptz_coro,
-                onvif_coro,
-                defaults=(
-                    [
-                        ch
-                        for ch in self.config_entry.data.get(CONF_PTZ_CHANNELS, [])
-                        if ch in self._available_channels
-                    ],
-                    set(),
-                ),
-            )
-            self._ptz_channels = [
-                ch for ch in self._ptz_channels if ch in self._available_channels
-            ]
+                self._ptz_channels = [
+                    ch
+                    for ch in self.config_entry.data.get(CONF_PTZ_CHANNELS, [])
+                    if ch in self._available_channels
+                ]
         finally:
             await client.close()
 
@@ -337,7 +452,7 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_channels(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> ConfigFlowResult:
         """Update camera channel selection."""
         errors: dict[str, str] = {}
 
@@ -379,7 +494,7 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_features(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
+    ) -> ConfigFlowResult:
         """Update feature selection for the chosen channels."""
         has_ptz = any(ch in self._ptz_channels for ch in self._selected_channels)
 
@@ -394,24 +509,33 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
                     if ch in self._ptz_channels
                     else [f for f in enabled if f != CameraFeature.PTZ]
                 )
-            # Remove channels that were deselected
             for key in list(current_features):
                 if int(key) not in self._selected_channels:
                     del current_features[key]
 
             # Clean up devices and entities for channels that were deselected
-            deselected_channels = set(self.config_entry.data.get(CONF_CHANNELS, [])) - set(self._selected_channels)
+            deselected_channels = set(
+                self.config_entry.data.get(CONF_CHANNELS, [])
+            ) - set(self._selected_channels)
             if deselected_channels:
                 device_reg = dr.async_get(self.hass)
-                existing_devices = dr.async_entries_for_config_entry(device_reg, self.config_entry.entry_id)
+                existing_devices = dr.async_entries_for_config_entry(
+                    device_reg, self.config_entry.entry_id
+                )
                 for dev in existing_devices:
                     for domain, identifier in dev.identifiers:
-                        if domain == DOMAIN and identifier.startswith(f"{self.config_entry.entry_id}_ch"):
+                        if domain == DOMAIN and identifier.startswith(
+                            f"{self.config_entry.entry_id}_ch"
+                        ):
                             try:
                                 ch_idx = int(identifier.split("_ch")[-1])
                                 if ch_idx in deselected_channels:
-                                    _LOGGER.info("Removing deselected camera device '%s' (ch %d)", dev.name, ch_idx)
-                                    device_reg.async_update_device(dev.id, remove_config_entry_id=self.config_entry.entry_id)
+                                    _LOGGER.info(
+                                        "Removing deselected camera device '%s' (ch %d)",
+                                        dev.name,
+                                        ch_idx,
+                                    )
+                                    device_reg.async_remove_device(dev.id)
                             except ValueError:
                                 pass
 
@@ -422,12 +546,14 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
                 if ch in self._selected_channels and CameraFeature.PTZ in enabled
             }
             entity_reg = er.async_get(self.hass)
-            for ent in er.async_entries_for_config_entry(entity_reg, self.config_entry.entry_id):
+            for ent in er.async_entries_for_config_entry(
+                entity_reg, self.config_entry.entry_id
+            ):
                 uid = ent.unique_id or ""
                 prefix = f"{self.config_entry.entry_id}_ch"
                 if uid.startswith(prefix) and "_ptz_" in uid:
                     try:
-                        ch_part = uid[len(prefix):].split("_", 1)[0]
+                        ch_part = uid[len(prefix) :].split("_", 1)[0]
                         ch_idx = int(ch_part)
                         if ch_idx not in active_ptz_channels:
                             entity_reg.async_remove(ent.entity_id)
@@ -438,7 +564,9 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
                 **self.config_entry.data,
                 CONF_CHANNELS: self._selected_channels,
                 CONF_PTZ_CHANNELS: [
-                    ch for ch in self._ptz_channels if ch in self._selected_channels
+                    ch
+                    for ch in self._ptz_channels
+                    if ch in self._selected_channels
                 ],
                 CONF_FEATURES: current_features,
                 "channel_names": {
@@ -446,13 +574,15 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
                     for ch, name in self._available_channels.items()
                 },
             }
-            self.hass.config_entries.async_update_entry(self.config_entry, data=updated_data)
+            self.hass.config_entries.async_update_entry(
+                self.config_entry, data=updated_data
+            )
             await self.hass.config_entries.async_reload(self.config_entry.entry_id)
             return self.async_create_entry(title="", data={})
 
-        # Pre-fill features from the union of saved features across all selected channels
-        # (Using only the first channel would drop 'ptz' whenever CH 1 is not a PTZ camera)
-        stored_features: dict[str, list[str]] = self.config_entry.data.get(CONF_FEATURES, {})
+        stored_features: dict[str, list[str]] = self.config_entry.data.get(
+            CONF_FEATURES, {}
+        )
         union_stored: set[str] = set()
         for ch in self._selected_channels:
             union_stored.update(stored_features.get(str(ch), []))
@@ -464,7 +594,11 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
                 if f in union_stored and (f != CameraFeature.PTZ or has_ptz)
             ]
             if has_ptz and CameraFeature.PTZ not in current_enabled:
-                ptz_selected = [ch for ch in self._selected_channels if ch in self._ptz_channels]
+                ptz_selected = [
+                    ch
+                    for ch in self._selected_channels
+                    if ch in self._ptz_channels
+                ]
                 if any(str(ch) not in stored_features for ch in ptz_selected):
                     current_enabled.append(CameraFeature.PTZ)
         else:
@@ -474,7 +608,9 @@ class IntelbrasDVROptionsFlow(config_entries.OptionsFlow):
             step_id="features",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(CONF_FEATURES, default=current_enabled): SelectSelector(
+                    vol.Optional(
+                        CONF_FEATURES, default=current_enabled
+                    ): SelectSelector(
                         SelectSelectorConfig(
                             options=_feature_options(has_ptz),
                             translation_key="features",
@@ -531,24 +667,3 @@ def _default_features(has_ptz: bool) -> list[str]:
     if has_ptz:
         defaults.append(CameraFeature.PTZ)
     return defaults
-
-
-async def _gather_ignore_errors(
-    *coros: Any,
-    defaults: tuple[Any, ...],
-) -> tuple[Any, ...]:
-    """Run coroutines concurrently; replace None or exceptions with the corresponding default."""
-    valid_tasks = []
-    for coro, default in zip(coros, defaults):
-        if coro is not None and asyncio.iscoroutine(coro):
-            valid_tasks.append(coro)
-        else:
-            async def _dummy(val=default):
-                return val
-            valid_tasks.append(_dummy())
-
-    results = await asyncio.gather(*valid_tasks, return_exceptions=True)
-    return tuple(
-        default if (isinstance(r, Exception) or r is None) else r
-        for r, default in zip(results, defaults)
-    )

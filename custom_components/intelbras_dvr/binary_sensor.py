@@ -1,26 +1,27 @@
-"""Binary sensor entities: motion, video loss, and video blind per channel.
+"""Binary sensor entities: motion, video loss, video blind, and event stream status.
 
-These entities use the dedicated ``IntelbrasEventCoordinator`` which polls
-every 5 seconds so that alarm state changes are reflected quickly in
-Home Assistant automations.
+These entities use the dedicated ``IntelbrasEventCoordinator`` which maintains a
+persistent HTTP push stream (``eventManager.cgi?action=attach``) so that alarm
+state changes are reflected in real time in Home Assistant automations.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
     BinarySensorEntityDescription,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+if TYPE_CHECKING:
+    from . import IntelbrasDVRConfigEntry
 from .const import CONF_CHANNELS, CONF_FEATURES, DOMAIN, CameraFeature
 from .coordinator import IntelbrasEventCoordinator
 from .entity import camera_device_info, dvr_device_info
@@ -30,7 +31,7 @@ from .entity import camera_device_info, dvr_device_info
 class DVRBinarySensorDescription(BinarySensorEntityDescription):
     """Extend BinarySensorEntityDescription with the event dict key."""
 
-    event_key: str  # key inside the per-channel event dict
+    event_key: str
     required_feature: CameraFeature
 
 
@@ -58,10 +59,18 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[DVRBinarySensorDescription, ...] = (
     ),
 )
 
+EVENT_STREAM_DESCRIPTION = BinarySensorEntityDescription(
+    key="event_stream",
+    translation_key="event_stream",
+    device_class=BinarySensorDeviceClass.CONNECTIVITY,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    entity_registry_visible_default=False,
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: IntelbrasDVRConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up binary sensor entities for all selected channels."""
@@ -91,12 +100,7 @@ class DVRBinarySensor(
     CoordinatorEntity[IntelbrasEventCoordinator],
     BinarySensorEntity,
 ):
-    """
-    Binary sensor backed by the fast event coordinator (5 s poll).
-
-    State is derived from the per-channel event dict stored in
-    ``IntelbrasEventCoordinator.data``.
-    """
+    """Binary sensor backed by the real-time event stream coordinator."""
 
     entity_description: DVRBinarySensorDescription
     _attr_has_entity_name = True
@@ -104,7 +108,7 @@ class DVRBinarySensor(
     def __init__(
         self,
         coordinator: IntelbrasEventCoordinator,
-        entry: ConfigEntry,
+        entry: IntelbrasDVRConfigEntry,
         channel: int,
         channel_name: str,
         description: DVRBinarySensorDescription,
@@ -115,9 +119,7 @@ class DVRBinarySensor(
         self._channel = channel
         self._channel_name = channel_name
         self._entry = entry
-        self._attr_unique_id = (
-            f"{entry.entry_id}_ch{channel}_{description.key}"
-        )
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_{description.key}"
         self._attr_device_info = camera_device_info(
             entry=entry,
             coordinator=coordinator,
@@ -145,21 +147,19 @@ class DVREventStreamBinarySensor(
 ):
     """Binary sensor reporting whether the real-time event stream is connected."""
 
-    _attr_translation_key = "event_stream"
-    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_entity_registry_visible_default = False
+    entity_description: BinarySensorEntityDescription = EVENT_STREAM_DESCRIPTION
     _attr_has_entity_name = True
 
     def __init__(
         self,
         coordinator: IntelbrasEventCoordinator,
-        entry: ConfigEntry,
+        entry: IntelbrasDVRConfigEntry,
     ) -> None:
+        """Initialise the event stream connectivity sensor."""
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_event_stream"
-        if hasattr(coordinator, "main_coordinator") and coordinator.main_coordinator:
+        if coordinator.main_coordinator:
             self._attr_device_info = dvr_device_info(entry, coordinator.main_coordinator)
         else:
             self._attr_device_info = DeviceInfo(
@@ -171,12 +171,12 @@ class DVREventStreamBinarySensor(
     @property
     def is_on(self) -> bool:
         """Return True if the event stream is currently connected."""
-        return getattr(self.coordinator, "stream_connected", False)
+        return bool(self.coordinator.stream_connected)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return stream diagnostic attributes."""
         return {
-            "reconnect_count": getattr(self.coordinator, "reconnect_count", 0),
-            "last_heartbeat": getattr(self.coordinator, "last_heartbeat", None),
+            "reconnect_count": self.coordinator.reconnect_count,
+            "last_heartbeat": self.coordinator.last_heartbeat,
         }

@@ -2,33 +2,52 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import logging
-import sys
 import time
 from datetime import timedelta
-from typing import Any
+from typing import Any, TypedDict
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_CHANNELS,
     CONF_PTZ_CHANNELS,
     CONF_SNAPSHOT_INTERVAL,
+    DEFAULT_BRIGHTNESS,
+    DEFAULT_SATURATION_ACUTANCE,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_SNAPSHOT_INTERVAL,
     DOMAIN,
     FIRMWARE_CHECK_INTERVAL,
+    RECORD_MODE_SCHEDULE,
 )
 from .dvr import DVRAuthError, DVRConnectionError, IntelbrasClient
 
 _LOGGER = logging.getLogger(__name__)
 
-# How often to poll alarm / motion event state (seconds).
-# Kept intentionally short so that binary sensors react within a few seconds.
-EVENT_SCAN_INTERVAL = 5
+
+class DVRRuntimeState(TypedDict, total=False):
+    """Typed dictionary representing the main coordinator state."""
+
+    system_info: dict[str, str]
+    software_version: str | None
+    remote_devices: dict[int, dict[str, Any]]
+    monitor_caps: list[int]
+    total_channels: int
+    monitor_mode: dict[str, Any]
+    video_color: dict[int, dict[str, int]]
+    storage_info: dict[str, Any]
+    record_modes: dict[int, int]
+    encode_info: dict[int, dict[str, Any]]
+    ptz_presets: dict[int, dict[int, str]]
+    firmware_update: dict[str, Any]
+    online: bool
+    response_time_ms: float | None
+    consecutive_failures: int
 
 
 # ---------------------------------------------------------------------------
@@ -36,12 +55,12 @@ EVENT_SCAN_INTERVAL = 5
 # ---------------------------------------------------------------------------
 
 
-class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
+class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
     """Coordinate periodic data refresh from the Intelbras DVR.
 
     Polls every DEFAULT_SCAN_INTERVAL seconds (default 60 s).
     Manages heavier data: system info, video colour, disk, PTZ presets,
-    recording modes, and firmware update checks.
+    recording modes, monitor capabilities, and firmware update checks.
     """
 
     config_entry: ConfigEntry
@@ -64,30 +83,14 @@ class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.snapshot_interval: float = float(
             entry.options.get(CONF_SNAPSHOT_INTERVAL, DEFAULT_SNAPSHOT_INTERVAL)
         )
+        self._last_synced_options: dict[str, Any] = dict(entry.options)
         self._consecutive_failures: int = 0
         self._last_response_time_ms: float | None = None
 
-        # Ensure helper & config_flow submodules are hot-reloaded on entry reload
-        for sub in ("entity", "ptz", "config_flow"):
-            mod_name = f"custom_components.intelbras_dvr.{sub}"
-            try:
-                if mod_name in sys.modules:
-                    importlib.reload(sys.modules[mod_name])
-                else:
-                    importlib.import_module(mod_name)
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.debug("Could not reload %s: %s", mod_name, exc)
-
-        # Register or hot-reload all HTTP thumbnail views dynamically on coordinator creation
-        try:
-            from .views import register_or_update_views
-
-            register_or_update_views(hass)
-        except Exception as exc:  # noqa: BLE001
-            _LOGGER.warning("Could not register/update Intelbras HTTP views: %s", exc)
         self._cached_system_info: dict[str, str] | None = None
         self._cached_software_version: str | None = None
         self._cached_remote_devices: dict[int, dict[str, Any]] | None = None
+        self._cached_monitor_caps: list[int] | None = None
         self._cached_ptz_presets: dict[int, dict[int, str]] = {}
         self._presets_loaded: bool = False
         self._last_firmware_check: float = 0.0
@@ -120,7 +123,10 @@ class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not ptz_chs:
             self._presets_loaded = True
             return
-        _LOGGER.debug("Fetching PTZ presets on initialization/reconfiguration for channels: %s", ptz_chs)
+        _LOGGER.debug(
+            "Fetching PTZ presets on initialization/reconfiguration for channels: %s",
+            ptz_chs,
+        )
         preset_tasks = [self.client.get_ptz_presets(ch) for ch in ptz_chs]
         preset_results = await asyncio.gather(*preset_tasks, return_exceptions=True)
         for ch, res in zip(ptz_chs, preset_results):
@@ -130,7 +136,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.warning("Could not fetch PTZ presets for channel %d: %s", ch, res)
         self._presets_loaded = True
 
-    async def _async_update_data(self) -> dict[str, Any]:
+    async def _async_update_data(self) -> DVRRuntimeState:
         """Fetch fresh state from the DVR with minimal overhead."""
         channels = self.selected_channels
 
@@ -138,15 +144,27 @@ class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not self._presets_loaded:
             await self.async_load_ptz_presets()
 
-        # Cache static system info / software version / remote devices on first run
-        if self._cached_system_info is None or self._cached_software_version is None or self._cached_remote_devices is None:
+        # Cache static system info / software version / remote devices / monitor caps on first run
+        if (
+            self._cached_system_info is None
+            or self._cached_software_version is None
+            or self._cached_remote_devices is None
+            or self._cached_monitor_caps is None
+        ):
             init_tasks = [
                 self.client.get_system_info(),
                 self.client.get_software_version(),
                 self.client.get_channel_titles(),
+                self.client.get_monitor_caps(),
             ]
             init_results = await asyncio.gather(*init_tasks, return_exceptions=True)
-            sys_info_res, sw_version_res, active_titles_res = init_results
+            sys_info_res, sw_version_res, active_titles_res, monitor_caps_res = init_results
+
+            if isinstance(sys_info_res, DVRAuthError):
+                raise ConfigEntryAuthFailed(
+                    translation_domain=DOMAIN,
+                    translation_key="auth_failed",
+                ) from sys_info_res
 
             if isinstance(active_titles_res, dict) and active_titles_res:
                 cleaned_names = {str(ch): name for ch, name in active_titles_res.items()}
@@ -161,7 +179,16 @@ class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._cached_remote_devices = remote_dev_res
             if isinstance(sys_info_res, dict):
                 self._cached_system_info = sys_info_res
-            if isinstance(sw_version_res, str) and sw_version_res.strip() and sw_version_res.strip() != "Unknown":
+            if isinstance(monitor_caps_res, list) and monitor_caps_res:
+                self._cached_monitor_caps = monitor_caps_res
+            else:
+                self._cached_monitor_caps = [1, 4, 8, 9, 16]
+
+            if (
+                isinstance(sw_version_res, str)
+                and sw_version_res.strip()
+                and sw_version_res.strip() != "Unknown"
+            ):
                 self._cached_software_version = sw_version_res.strip()
             elif isinstance(self._cached_system_info, dict):
                 self._cached_software_version = (
@@ -173,7 +200,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         should_check_firmware = (now - self._last_firmware_check) >= FIRMWARE_CHECK_INTERVAL
 
         # Dynamic tasks: Grouped config (VideoColor + RecordMode + Encode), Monitor mode, Storage info
-        tasks: list = [
+        tasks: list[Any] = [
             self.client.get_batch_config(channels),
             self.client.get_monitor_mode(channel=1),
             self.client.get_storage_info(),
@@ -199,7 +226,13 @@ class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 return default
             return result
 
-        if isinstance(batch_config, (DVRAuthError, DVRConnectionError)):
+        if isinstance(batch_config, DVRAuthError):
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN,
+                translation_key="auth_failed",
+            ) from batch_config
+
+        if isinstance(batch_config, DVRConnectionError):
             self._consecutive_failures += 1
             if self._consecutive_failures >= 3:
                 raise UpdateFailed(
@@ -216,19 +249,28 @@ class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._consecutive_failures = 0
 
-        encode_info = {}
+        encode_info: dict[int, dict[str, Any]] = {}
         if isinstance(batch_config, tuple) and len(batch_config) == 3:
             video_color, record_modes, encode_info = batch_config
         elif isinstance(batch_config, tuple) and len(batch_config) == 2:
             video_color, record_modes = batch_config
         else:
-            video_color, record_modes = {}, {ch: 0 for ch in channels}
+            video_color, record_modes = {}, {ch: RECORD_MODE_SCHEDULE for ch in channels}
+
+        total_channels = (
+            self.client.total_channels
+            or len(self.channel_names)
+            or len(channels)
+            or 16
+        )
 
         return {
             "system_info": self._cached_system_info or {},
             "software_version": self._cached_software_version,
             "remote_devices": self._cached_remote_devices or {},
-            "monitor_mode": _safe(monitor_mode, {"mode": "split8", "group": 0}),
+            "monitor_caps": self._cached_monitor_caps or [1, 4, 8, 9, 16],
+            "total_channels": total_channels,
+            "monitor_mode": _safe(monitor_mode, {}),
             "video_color": _safe(video_color, {}),
             "storage_info": _safe(storage_info, {}),
             "record_modes": _safe(record_modes, {}),
@@ -276,8 +318,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
 
 class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]]):
-    """
-    Push-based coordinator dedicated to alarm / motion event state.
+    """Push-based coordinator dedicated to alarm / motion event state.
 
     Maintains a persistent HTTP stream via eventManager.cgi?action=attach,
     streaming binary sensor changes (motion, video loss, video blind)
@@ -356,11 +397,17 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
             runtime = getattr(self.config_entry, "runtime_data", None)
             if runtime is not None:
                 main_coord = getattr(runtime, "coordinator", None)
-        video_color_data = (main_coord.data or {}).get("video_color", {}) if main_coord else {}
+        video_color_data = (
+            (main_coord.data or {}).get("video_color", {}) if main_coord else {}
+        )
 
         suppress_until = self._unmasked_suppression.get(channel, 0.0)
         vc = video_color_data.get(channel, {})
-        is_masked = bool(vc) and vc.get("Brightness", 50) == 0 and vc.get("Saturation", 80) == 0
+        is_masked = (
+            bool(vc)
+            and vc.get("Brightness", DEFAULT_BRIGHTNESS) == 0
+            and vc.get("Saturation", DEFAULT_SATURATION_ACUTANCE) == 0
+        )
         is_suppressed = now < suppress_until
         return is_masked or is_suppressed
 
@@ -373,7 +420,11 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
             }
 
         if channel not in self.data:
-            self.data[channel] = {"motion": False, "video_loss": False, "video_blind": False}
+            self.data[channel] = {
+                "motion": False,
+                "video_loss": False,
+                "video_blind": False,
+            }
 
         pulse_key = (channel, sensor_key)
         if pulse_key in self._pulse_reset_tasks:
@@ -418,7 +469,9 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         channels = self.selected_channels
         filtered: dict[int, dict[str, bool]] = {}
         for ch in channels:
-            ch_status = status.get(ch, {"motion": False, "video_loss": False, "video_blind": False})
+            ch_status = status.get(
+                ch, {"motion": False, "video_loss": False, "video_blind": False}
+            )
             ch_dict = dict(ch_status)
             if self._is_video_blind_suppressed(ch):
                 ch_dict["video_blind"] = False
@@ -431,7 +484,7 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         """Invoked on heartbeat or line received from stream."""
         was_connected = self.stream_connected
         self.stream_connected = True
-        self.last_heartbeat = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.last_heartbeat = dt_util.now().isoformat(timespec="seconds")
         if not was_connected:
             self.async_set_updated_data(dict(self.data or {}))
 
@@ -446,15 +499,24 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
                     baseline = await self.client.get_event_status(channels)
                     self._apply_baseline(baseline)
                 except Exception as exc:  # noqa: BLE001
-                    _LOGGER.debug("Initial baseline event fetch failed before stream attach: %s", exc)
+                    _LOGGER.debug(
+                        "Initial baseline event fetch failed before stream attach: %s",
+                        exc,
+                    )
 
                 self.stream_connected = True
-                self.last_heartbeat = time.strftime("%Y-%m-%d %H:%M:%S")
+                self.last_heartbeat = dt_util.now().isoformat(timespec="seconds")
                 self.async_set_updated_data(dict(self.data or {}))
                 backoff = 2.0
                 await self.client.listen_event_stream(
                     event_callback=self._handle_stream_event,
-                    codes=["VideoMotion", "SmartMotionHuman", "SmartMotionVehicle", "VideoLoss", "VideoBlind"],
+                    codes=[
+                        "VideoMotion",
+                        "SmartMotionHuman",
+                        "SmartMotionVehicle",
+                        "VideoLoss",
+                        "VideoBlind",
+                    ],
                     heartbeat=5,
                     stop_event=self._stop_event,
                     heartbeat_callback=self._handle_heartbeat,
@@ -488,7 +550,9 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
             status = await self.client.get_event_status(channels)
             filtered: dict[int, dict[str, bool]] = {}
             for ch in channels:
-                ch_status = status.get(ch, {"motion": False, "video_loss": False, "video_blind": False})
+                ch_status = status.get(
+                    ch, {"motion": False, "video_loss": False, "video_blind": False}
+                )
                 ch_dict = dict(ch_status)
                 if self._is_video_blind_suppressed(ch):
                     ch_dict["video_blind"] = False
@@ -496,4 +560,7 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
             return filtered
         except (DVRConnectionError, DVRAuthError) as exc:
             _LOGGER.debug("Event poll skipped (DVR unreachable): %s", exc)
-            return self.data or {ch: {"motion": False, "video_loss": False, "video_blind": False} for ch in channels}
+            return self.data or {
+                ch: {"motion": False, "video_loss": False, "video_blind": False}
+                for ch in channels
+            }

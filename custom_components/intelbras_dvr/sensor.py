@@ -1,31 +1,79 @@
 """Sensor entities: DVR system diagnostics and per-channel IP addresses."""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
+    SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, PERCENTAGE
+from homeassistant.const import EntityCategory, PERCENTAGE, UnitOfTime
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+if TYPE_CHECKING:
+    from . import IntelbrasDVRConfigEntry
 from .const import CONF_CHANNELS
 from .coordinator import IntelbrasCoordinator
 from .entity import CameraChannelEntity, DVREntity
 
+DVR_STATUS_DESCRIPTION = SensorEntityDescription(
+    key="dvr_status",
+    translation_key="dvr_status",
+    device_class=SensorDeviceClass.ENUM,
+    options=["online", "offline"],
+    icon="mdi:cctv",
+)
 
-# ---------------------------------------------------------------------------
-# DVR-level sensors
-# ---------------------------------------------------------------------------
+DISK_USAGE_DESCRIPTION = SensorEntityDescription(
+    key="disk_usage",
+    translation_key="disk_usage",
+    icon="mdi:harddisk",
+    native_unit_of_measurement=PERCENTAGE,
+    state_class=SensorStateClass.MEASUREMENT,
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+MONITOR_MODE_DESCRIPTION = SensorEntityDescription(
+    key="monitor_mode",
+    translation_key="monitor_mode",
+    icon="mdi:monitor",
+)
+
+RESPONSE_TIME_DESCRIPTION = SensorEntityDescription(
+    key="response_time",
+    translation_key="response_time",
+    icon="mdi:timer-outline",
+    native_unit_of_measurement=UnitOfTime.MILLISECONDS,
+    device_class=SensorDeviceClass.DURATION,
+    state_class=SensorStateClass.MEASUREMENT,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    entity_registry_visible_default=False,
+)
+
+CONSECUTIVE_FAILURES_DESCRIPTION = SensorEntityDescription(
+    key="consecutive_failures",
+    translation_key="consecutive_failures",
+    icon="mdi:alert-circle-outline",
+    state_class=SensorStateClass.MEASUREMENT,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    entity_registry_visible_default=False,
+)
+
+CAMERA_IP_DESCRIPTION = SensorEntityDescription(
+    key="ip_address",
+    translation_key="ip_address",
+    icon="mdi:ip-network",
+    entity_category=EntityCategory.DIAGNOSTIC,
+    entity_registry_enabled_default=False,
+)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: IntelbrasDVRConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up DVR diagnostic sensors and per-channel IP sensors."""
@@ -55,30 +103,30 @@ async def async_setup_entry(
 class DVRStatusSensor(DVREntity, SensorEntity):
     """Reports whether the DVR is currently reachable."""
 
-    _attr_translation_key = "dvr_status"
-    _attr_device_class = SensorDeviceClass.ENUM
-    _attr_options = ["online", "offline"]
-    _attr_icon = "mdi:cctv"
+    entity_description: SensorEntityDescription = DVR_STATUS_DESCRIPTION
 
-    def __init__(self, coordinator: IntelbrasCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the DVR status sensor."""
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_status"
 
     @property
     def native_value(self) -> str:
+        """Return online or offline."""
         return "online" if (self.coordinator.data or {}).get("online") else "offline"
 
 
 class DVRDiskUsageSensor(DVREntity, SensorEntity):
     """Reports the percentage of disk capacity used on the DVR."""
 
-    _attr_translation_key = "disk_usage"
-    _attr_icon = "mdi:harddisk"
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    entity_description: SensorEntityDescription = DISK_USAGE_DESCRIPTION
 
-    def __init__(self, coordinator: IntelbrasCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the disk usage sensor."""
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_disk_usage"
 
@@ -94,14 +142,7 @@ class DVRDiskUsageSensor(DVREntity, SensorEntity):
 
     @property
     def native_value(self) -> float | None:
-        """
-        Compute disk usage percentage from the DVR storage info.
-
-        The Intelbras CGI returns a flat dict with keys like:
-          table.StorageInfo[0].TotalCapacity  (MB)
-          table.StorageInfo[0].UsedCapacity   (MB)
-        This method scans all keys regardless of prefix/index.
-        """
+        """Compute disk usage percentage from the DVR storage info."""
         storage: dict[str, Any] = (self.coordinator.data or {}).get("storage_info", {})
         if not storage:
             return None
@@ -115,10 +156,18 @@ class DVRDiskUsageSensor(DVREntity, SensorEntity):
             parsed = self._parse_mb(val)
             if parsed is None:
                 continue
-            if "totalcapacity" in key_lower or "total_capacity" in key_lower or "totalbytes" in key_lower:
+            if (
+                "totalcapacity" in key_lower
+                or "total_capacity" in key_lower
+                or "totalbytes" in key_lower
+            ):
                 total_mb += parsed
                 found = True
-            elif "usedcapacity" in key_lower or "used_capacity" in key_lower or "usedbytes" in key_lower:
+            elif (
+                "usedcapacity" in key_lower
+                or "used_capacity" in key_lower
+                or "usedbytes" in key_lower
+            ):
                 used_mb += parsed
                 found = True
 
@@ -128,6 +177,7 @@ class DVRDiskUsageSensor(DVREntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        """Return raw storage capacity and health attributes."""
         storage: dict[str, Any] = (self.coordinator.data or {}).get("storage_info", {})
         return {
             k: v
@@ -139,38 +189,47 @@ class DVRDiskUsageSensor(DVREntity, SensorEntity):
 class DVRMonitorModeSensor(DVREntity, SensorEntity):
     """Reports the current split mode of the physical monitor output."""
 
-    _attr_translation_key = "monitor_mode"
-    _attr_icon = "mdi:monitor"
+    entity_description: SensorEntityDescription = MONITOR_MODE_DESCRIPTION
 
-    def __init__(self, coordinator: IntelbrasCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the monitor mode sensor."""
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_monitor_mode"
 
     @property
     def native_value(self) -> str | None:
-        mode_data: dict = (self.coordinator.data or {}).get("monitor_mode", {})
-        mode = mode_data.get("mode", "")
-        group = mode_data.get("group", 0)
-        return f"{mode} (group {group})" if mode else None
+        """Return the active monitor split mode key (e.g. split1, split4, split8)."""
+        mode_data: dict[str, Any] = (self.coordinator.data or {}).get(
+            "monitor_mode", {}
+        )
+        mode = str(mode_data.get("mode", "")).strip()
+        return mode if mode else None
 
-
-# ---------------------------------------------------------------------------
-# Per-channel sensors
-# ---------------------------------------------------------------------------
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the active monitor group and mode details."""
+        mode_data: dict[str, Any] = (self.coordinator.data or {}).get(
+            "monitor_mode", {}
+        )
+        if not mode_data:
+            return {}
+        return {
+            "mode": mode_data.get("mode"),
+            "group": mode_data.get("group", 0),
+        }
 
 
 class CameraIPSensor(CameraChannelEntity, SensorEntity):
     """Reports the IP address of an IP camera connected to the DVR (disabled by default)."""
 
-    _attr_translation_key = "ip_address"
-    _attr_icon = "mdi:ip-network"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_entity_registry_enabled_default = False
+    entity_description: SensorEntityDescription = CAMERA_IP_DESCRIPTION
 
     def __init__(
         self,
         coordinator: IntelbrasCoordinator,
-        entry: ConfigEntry,
+        entry: IntelbrasDVRConfigEntry,
         channel: int,
         channel_name: str,
     ) -> None:
@@ -203,37 +262,34 @@ class CameraIPSensor(CameraChannelEntity, SensorEntity):
 class DVRResponseTimeSensor(DVREntity, SensorEntity):
     """Reports the response time of the DVR API in milliseconds."""
 
-    _attr_translation_key = "response_time"
-    _attr_icon = "mdi:timer-outline"
-    _attr_native_unit_of_measurement = "ms"
-    _attr_device_class = SensorDeviceClass.DURATION
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_entity_registry_visible_default = False
+    entity_description: SensorEntityDescription = RESPONSE_TIME_DESCRIPTION
 
-    def __init__(self, coordinator: IntelbrasCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the response time sensor."""
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_response_time"
 
     @property
     def native_value(self) -> float | None:
+        """Return API response time in milliseconds."""
         return (self.coordinator.data or {}).get("response_time_ms")
 
 
 class DVRConsecutiveFailuresSensor(DVREntity, SensorEntity):
     """Reports consecutive communication failures with the DVR."""
 
-    _attr_translation_key = "consecutive_failures"
-    _attr_icon = "mdi:alert-circle-outline"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_entity_registry_visible_default = False
+    entity_description: SensorEntityDescription = CONSECUTIVE_FAILURES_DESCRIPTION
 
-    def __init__(self, coordinator: IntelbrasCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the consecutive failures sensor."""
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_consecutive_failures"
 
     @property
     def native_value(self) -> int:
-        return (self.coordinator.data or {}).get("consecutive_failures", 0)
-
+        """Return consecutive failure count."""
+        return int((self.coordinator.data or {}).get("consecutive_failures", 0))

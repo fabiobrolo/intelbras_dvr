@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Conectar ao DVR Intelbras",
-        "description": "Informe os dados de conexão do seu DVR Intelbras.",
+        "description": "Informe os dados de conexão do seu DVR Intelbras. As credenciais serão validadas diretamente no dispositivo.",
         "data": {
           "host": "Endereço IP ou Host",
           "username": "Usuário",
@@ -21,9 +21,28 @@
       },
       "features": {
         "title": "Recursos dos Canais",
-        "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras selecionadas.",
+        "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras selecionadas ({cameras}).",
         "data": {
           "features": "Recursos Ativados"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reautenticar DVR Intelbras",
+        "description": "Atualize as credenciais de acesso ao seu DVR Intelbras em {host}.",
+        "data": {
+          "username": "Usuário",
+          "password": "Senha"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigurar DVR Intelbras",
+        "description": "Atualize os dados de conexão e credenciais do seu DVR Intelbras.",
+        "data": {
+          "host": "Endereço IP ou Host",
+          "username": "Usuário",
+          "password": "Senha",
+          "http_port": "Porta HTTP",
+          "rtsp_port": "Porta RTSP"
         }
       }
     },
@@ -35,7 +54,10 @@
       "unknown": "Ocorreu um erro inesperado."
     },
     "abort": {
-      "already_configured": "Este DVR já está configurado."
+      "already_configured": "Este DVR já está configurado.",
+      "reauth_successful": "Reautenticação concluída com sucesso.",
+      "reconfigure_successful": "Reconfiguração concluída com sucesso.",
+      "unknown": "Ocorreu um erro inesperado."
     }
   },
   "options": {
@@ -80,7 +102,22 @@
         "split4": "4 câmeras (2x2)",
         "split8": "8 câmeras (1+7)",
         "split9": "9 câmeras (3x3)",
-        "split16": "16 câmeras (4x4)"
+        "split16": "16 câmeras (4x4)",
+        "split25": "25 câmeras (5x5)",
+        "split36": "36 câmeras (6x6)"
+      }
+    },
+    "monitor_view_format": {
+      "options": {
+        "single_view": "Visualização de 1: {name}",
+        "range_view": "Visualização de {count}: {start}-{end}",
+        "full_view": "Visualização de {count}"
+      }
+    },
+    "media_browser": {
+      "options": {
+        "view_all_timeline": "📅 {date} – Ver Tudo (Linha do Tempo)",
+        "timeline": "Linha do Tempo"
       }
     },
     "mask_action": {
@@ -95,8 +132,16 @@
         "down": "Para baixo",
         "left": "Para esquerda",
         "right": "Para direita",
+        "upper_left": "Superior esquerda",
+        "upper_right": "Superior direita",
+        "lower_left": "Inferior esquerda",
+        "lower_right": "Inferior direita",
         "zoom_in": "Mais zoom",
-        "zoom_out": "Menos zoom"
+        "zoom_out": "Menos zoom",
+        "focus_near": "Foco perto",
+        "focus_far": "Foco longe",
+        "home": "Posição inicial (Home)",
+        "auto_scan": "Varredura automática"
       }
     }
   },
@@ -203,7 +248,16 @@
         "name": "Uso do disco"
       },
       "monitor_mode": {
-        "name": "Modo do monitor"
+        "name": "Modo do monitor",
+        "state": {
+          "split1": "1 câmera (1x1)",
+          "split4": "4 câmeras (2x2)",
+          "split8": "8 câmeras (1+7)",
+          "split9": "9 câmeras (3x3)",
+          "split16": "16 câmeras (4x4)",
+          "split25": "25 câmeras (5x5)",
+          "split36": "36 câmeras (6x6)"
+        }
       },
       "ip_address": {
         "name": "Endereço IP"
@@ -224,6 +278,50 @@
       "dvr_firmware_update": {
         "name": "Atualização de firmware"
       }
+    }
+  },
+  "exceptions": {
+    "auth_failed": {
+      "message": "Falha na autenticação com o DVR Intelbras. Verifique suas credenciais."
+    },
+    "cannot_connect": {
+      "message": "Não foi possível conectar ao DVR Intelbras em {host}."
+    },
+    "entry_not_found": {
+      "message": "Nenhuma entrada do DVR Intelbras encontrada com o ID '{entry_id}'."
+    },
+    "no_entries_configured": {
+      "message": "Nenhuma integração do DVR Intelbras está carregada no momento."
+    },
+    "multiple_entries_configured": {
+      "message": "Múltiplos DVRs Intelbras estão configurados. Especifique 'entry_id' na chamada do serviço."
+    },
+    "set_video_color_failed": {
+      "message": "Falha ao definir as configurações de cor de vídeo para o canal {channel}."
+    },
+    "set_monitor_split_failed": {
+      "message": "Falha ao alterar o modo de divisão do monitor físico para '{mode}'."
+    },
+    "mask_camera_failed": {
+      "message": "Falha ao atualizar a máscara de privacidade no canal {channel}."
+    },
+    "reboot_failed": {
+      "message": "O comando de reinicialização não foi confirmado pelo DVR."
+    },
+    "record_camera_failed": {
+      "message": "Falha ao iniciar a gravação manual no canal {channel}."
+    },
+    "ptz_stop_failed": {
+      "message": "Falha ao interromper o movimento PTZ no canal {channel}."
+    },
+    "ptz_preset_failed": {
+      "message": "Falha ao mover o canal {channel} para a predefinição PTZ {preset}."
+    },
+    "firmware_update_failed": {
+      "message": "Falha na atualização de firmware: {error}. Você pode atualizar manualmente em {url}."
+    },
+    "firmware_update_rejected": {
+      "message": "O DVR não aceitou o comando de atualização online. Atualize manualmente em {url}."
     }
   },
   "services": {
@@ -283,7 +381,7 @@
         },
         "channel": {
           "name": "Canal",
-          "description": "Índice do canal para o modo split1."
+          "description": "Índice da saída de monitor (1 para monitor principal)."
         }
       }
     },

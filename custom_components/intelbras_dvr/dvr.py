@@ -12,9 +12,19 @@ from typing import Any, Callable
 import httpx
 
 from .const import (
+    CLOUD_UPGRADER_CHECK_API,
+    CLOUD_UPGRADER_EXEC_API,
     CONFIG_MANAGER_CGI,
+    DEFAULT_ACUTANCE,
+    DEFAULT_BRIGHTNESS,
+    DEFAULT_CONTRAST,
     DEFAULT_HTTP_PORT,
+    DEFAULT_HUE,
     DEFAULT_RTSP_PORT,
+    DEFAULT_SATURATION_ACUTANCE,
+    DEFAULT_SATURATION_ANALOG,
+    DEV_VIDEO_INPUT_CGI,
+    ENCODE_CGI,
     EVENT_MANAGER_CGI,
     LOGIN_LOCKOUT_BACKOFF,
     MAGICBOX_CGI,
@@ -42,7 +52,7 @@ class DVRError(Exception):
 
 
 class DVRAuthError(DVRError):
-    """Raised when the DVR returns 401 Unauthorized."""
+    """Raised when the DVR returns 401/403 authentication failure."""
 
 
 class DVRConnectionError(DVRError):
@@ -63,7 +73,7 @@ class Recording:
 
 
 class IntelbrasClient:
-    """Async HTTP client with Digest Auth for the Intelbras / Dahua CGI API."""
+    """Async HTTP client with Digest Auth for the Intelbras / Dahua CGI API (V3.35)."""
 
     def __init__(
         self,
@@ -89,6 +99,15 @@ class IntelbrasClient:
         self._dvr_earliest_date: date | None = None
         self._encode_config: dict[int, dict[str, Any]] = {}
         self._remote_devices: dict[int, dict[str, Any]] = {}
+        self._channel_signal_formats: dict[int, str] = {}
+        self._total_channels: int = 0
+        self._monitor_caps: list[int] | None = None
+        self._latest_fw_version: str | None = None
+
+    @property
+    def total_channels(self) -> int:
+        """Return the total number of channels reported by the DVR."""
+        return self._total_channels
 
     def channel_supports_acutance(self, channel: int) -> bool:
         """Return True if the camera channel supports acutance (sharpness)."""
@@ -96,20 +115,30 @@ class IntelbrasClient:
 
     def channel_is_ip(self, channel: int) -> bool:
         """Return True if the channel is an active IP camera."""
-        if getattr(self, "_remote_devices", None):
+        if self._remote_devices:
             if channel not in self._remote_devices:
                 return False
             dev = self._remote_devices[channel]
-            return dev.get("Enable") == "true" and dev.get("Address") not in ("", "0.0.0.0", "192.168.0.0")
+            return dev.get("Enable") == "true" and dev.get("Address") not in (
+                "",
+                "0.0.0.0",
+                "192.168.0.0",
+            )
         return False
 
     def channel_is_analog(self, channel: int) -> bool:
         """Return True if the channel is an analog BNC camera."""
         return not self.channel_is_ip(channel)
 
+    def get_channel_signal_format(self, channel: int) -> str:
+        """Return the detected video signal format for a channel (e.g. HDCVI, AHD, TVI, CVBS, IP)."""
+        if self.channel_is_ip(channel):
+            return "IP"
+        return self._channel_signal_formats.get(channel, "HDCVI")
+
     def get_channel_profiles(self, channel: int) -> list[int]:
         """Return all configured VideoColor profile indexes for a channel."""
-        return sorted(list(self._channel_profiles.get(channel, {0})))
+        return sorted(self._channel_profiles.get(channel, {0}))
 
     @property
     def base_url(self) -> str:
@@ -146,7 +175,7 @@ class IntelbrasClient:
         if loop.time() < self._lockout_until:
             raise DVRAuthError(
                 f"Temporary lockout active for {self._lockout_until - loop.time():.0f}s "
-                "due to previous 401 Unauthorized."
+                "due to previous authentication failure."
             )
 
         client = await self._get_http_client()
@@ -155,7 +184,7 @@ class IntelbrasClient:
             if loop.time() < self._lockout_until:
                 raise DVRAuthError(
                     f"Temporary lockout active for {self._lockout_until - loop.time():.0f}s "
-                    "due to previous 401 Unauthorized."
+                    "due to previous authentication failure."
                 )
             try:
                 resp = await client.get(url, params=params, timeout=timeout)
@@ -163,6 +192,8 @@ class IntelbrasClient:
                 raise DVRConnectionError(f"Cannot connect to DVR at {url}") from exc
             except httpx.TimeoutException as exc:
                 raise DVRConnectionError(f"Timeout connecting to DVR at {url}") from exc
+            except httpx.HTTPError as exc:
+                raise DVRConnectionError(f"HTTP error communicating with DVR at {url}: {exc}") from exc
 
         if resp.status_code == 401:
             self._lockout_until = loop.time() + LOGIN_LOCKOUT_BACKOFF
@@ -175,13 +206,45 @@ class IntelbrasClient:
             self._lockout_until = 0.0
         return resp
 
+    async def _post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        timeout: float = 10.0,
+    ) -> httpx.Response:
+        """Perform a POST JSON request (used by V3.35 endpoints such as CloudUpgrader)."""
+        loop = asyncio.get_running_loop()
+        if loop.time() < self._lockout_until:
+            raise DVRAuthError("Temporary lockout active due to previous authentication failure.")
+
+        client = await self._get_http_client()
+        url = self.base_url + path
+        async with self._http_sem:
+            try:
+                resp = await client.post(url, json=payload, timeout=timeout)
+            except httpx.ConnectError as exc:
+                raise DVRConnectionError(f"Cannot connect to DVR at {url}") from exc
+            except httpx.TimeoutException as exc:
+                raise DVRConnectionError(f"Timeout connecting to DVR at {url}") from exc
+            except httpx.HTTPError as exc:
+                raise DVRConnectionError(f"HTTP error communicating with DVR at {url}: {exc}") from exc
+
+        if resp.status_code == 401:
+            self._lockout_until = loop.time() + LOGIN_LOCKOUT_BACKOFF
+            raise DVRAuthError("Invalid credentials (401 Unauthorized)")
+        if resp.status_code == 200:
+            self._lockout_until = 0.0
+        return resp
+
     # ------------------------------------------------------------------
-    # System information
+    # System information & Dynamic Hardware Discovery
     # ------------------------------------------------------------------
 
     async def get_system_info(self) -> dict[str, str]:
         """Return hardware information (serial number, model, processor)."""
         resp = await self._get(f"{MAGICBOX_CGI}?action=getSystemInfo")
+        if resp.status_code == 403:
+            raise DVRAuthError("Access forbidden (403 Forbidden)")
         result: dict[str, str] = {}
         if resp.status_code == 200:
             for line in resp.text.splitlines():
@@ -204,19 +267,27 @@ class IntelbrasClient:
 
         When active_only is True, filters out unassigned IP channels or inactive ports
         by inspecting RemoteDevice metadata and default placeholder titles from the DVR.
+        Also populates ``self._total_channels`` and ``self._channel_signal_formats``.
         """
         titles: dict[int, str] = {}
         remote_devices: dict[int, dict[str, str]] = {}
+        video_in_props: dict[int, dict[str, str]] = {}
 
         try:
             resp = await self._get(
                 CONFIG_MANAGER_CGI,
-                params={"action": "getConfig", "name": ["ChannelTitle", "RemoteDevice"]},
-                timeout=5.0,
+                params={
+                    "action": "getConfig",
+                    "name": ["ChannelTitle", "RemoteDevice", "VideoIn"],
+                },
+                timeout=6.0,
             )
             if resp.status_code == 200:
                 title_pat = re.compile(r"table\.ChannelTitle\[(\d+)\]\.Name=(.*)")
-                rem_pat = re.compile(r"table\.RemoteDevice\.uuid:System_CONFIG_NETCAMERA_INFO_(\d+)\.([A-Za-z0-9_\[\]\.]+)=(.*)")
+                rem_pat = re.compile(
+                    r"table\.RemoteDevice\.uuid:System_CONFIG_NETCAMERA_INFO_(\d+)\.([A-Za-z0-9_\[\]\.]+)=(.*)"
+                )
+                vin_pat = re.compile(r"table\.VideoIn\[(\d+)\]\.([A-Za-z0-9_\[\]\.]+)=(.*)")
 
                 for line in resp.text.splitlines():
                     line_str = line.strip()
@@ -228,8 +299,22 @@ class IntelbrasClient:
                     if m_r:
                         remote_devices.setdefault(int(m_r.group(1)), {})[m_r.group(2)] = m_r.group(3).strip()
                         continue
+                    m_v = vin_pat.match(line_str)
+                    if m_v:
+                        video_in_props.setdefault(int(m_v.group(1)), {})[m_v.group(2)] = m_v.group(3).strip()
+                        continue
+
                 if remote_devices:
                     self._remote_devices = remote_devices
+                for ch, props in video_in_props.items():
+                    sig = (
+                        props.get("SignalFormat")
+                        or props.get("Format")
+                        or props.get("Mode")
+                        or ""
+                    ).upper()
+                    if any(fmt in sig for fmt in ("HDCVI", "CVI", "AHD", "TVI", "CVBS", "NTSC", "PAL")):
+                        self._channel_signal_formats[ch] = "HDCVI" if "CVI" in sig else sig
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("Failed multi-param channel query: %s", exc)
 
@@ -250,13 +335,16 @@ class IntelbrasClient:
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.debug("Failed ChannelTitle query: %s", exc)
 
+        if titles:
+            self._total_channels = max(self._total_channels, len(titles), max(titles.keys()) + 1)
+
         if not active_only or not titles:
             return titles
 
         # Filter out inactive/unassigned channels (default placeholder name and no active IP camera)
         active_titles: dict[int, str] = {}
         for ch, name in titles.items():
-            rem = remote_devices.get(ch, {})
+            rem = remote_devices.get(ch, self._remote_devices.get(ch, {}))
             rem_enable = rem.get("Enable", "")
             rem_addr = rem.get("Address", "")
 
@@ -266,6 +354,8 @@ class IntelbrasClient:
                 f"channel {ch + 1}",
                 f"canal {ch + 1}",
                 f"cam{ch + 1}",
+                f"channel{ch + 1}",
+                f"canal{ch + 1}",
                 "",
             )
             is_ip_active = (
@@ -277,6 +367,77 @@ class IntelbrasClient:
                 active_titles[ch] = name or f"Channel {ch + 1}"
 
         return active_titles
+
+    async def async_discover_channels(self) -> tuple[dict[int, str], list[int], set[int]]:
+        """Discover active channels, PTZ-capable channels, and ONVIF channels dynamically."""
+        available_channels = await self.get_channel_titles(active_only=True)
+        if not available_channels:
+            return {}, [], set()
+
+        candidate_channels = list(available_channels.keys())
+        ptz_task = self.detect_ptz_channels(candidate_channels)
+        onvif_task = self.get_onvif_channels()
+        results = await asyncio.gather(ptz_task, onvif_task, return_exceptions=True)
+
+        ptz_res, onvif_res = results
+        ptz_channels: list[int] = (
+            [ch for ch in ptz_res if ch in available_channels]
+            if isinstance(ptz_res, list)
+            else []
+        )
+        onvif_channels: set[int] = onvif_res if isinstance(onvif_res, set) else set()
+        return available_channels, ptz_channels, onvif_channels
+
+    async def get_monitor_caps(self) -> list[int]:
+        """Discover supported preview split modes (e.g. [1, 4, 8, 9, 16]) from the DVR.
+
+        Uses ``GET /cgi-bin/encode.cgi?action=getCaps`` (HTTP API V3.35 Section 4.5.2,
+        ``caps.PreviewSplitNumList[i]``), falling back to total channel capacity.
+        """
+        if self._monitor_caps is not None:
+            return self._monitor_caps
+
+        split_nums: list[int] = []
+        try:
+            resp = await self._get(
+                ENCODE_CGI,
+                params={"action": "getCaps"},
+                timeout=4.0,
+            )
+            if resp.status_code == 200:
+                pat = re.compile(r"caps\.PreviewSplitNumList\[\d+\]=(\d+)")
+                for line in resp.text.splitlines():
+                    m = pat.match(line.strip())
+                    if m:
+                        val = int(m.group(1))
+                        if val > 0 and val not in split_nums:
+                            split_nums.append(val)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("encode.cgi?action=getCaps not available: %s", exc)
+
+        if not self._total_channels:
+            try:
+                resp_vin = await self._get(
+                    DEV_VIDEO_INPUT_CGI,
+                    params={"action": "getCollect"},
+                    timeout=3.0,
+                )
+                if resp_vin.status_code == 200:
+                    m_col = re.search(r"result=(\d+)", resp_vin.text)
+                    if m_col:
+                        self._total_channels = max(self._total_channels, int(m_col.group(1)))
+            except Exception:  # noqa: BLE001
+                pass
+
+        total = self._total_channels or 16
+        if not split_nums:
+            # Dynamically derive standard Dahua/Intelbras split modes from channel capacity
+            for candidate in (1, 4, 8, 9, 16, 25, 36):
+                if candidate == 1 or candidate <= total or (candidate == 16 and total >= 10):
+                    split_nums.append(candidate)
+
+        self._monitor_caps = sorted(set(split_nums))
+        return self._monitor_caps
 
     async def get_remote_devices(self, refresh: bool = False) -> dict[int, dict[str, Any]]:
         """Query connected remote IP cameras and their hardware metadata."""
@@ -330,10 +491,10 @@ class IntelbrasClient:
             config_url = None
             if ip and ip not in ("0.0.0.0", "192.168.0.0"):
                 if http_port and http_port not in ("", "0"):
-                    p = int(http_port) if http_port.isdigit() else 80
+                    p = int(http_port) if http_port.isdigit() else DEFAULT_HTTP_PORT
                     if p == 8000 and manufacturer == "Reolink":
-                        p = 80
-                    config_url = f"http://{ip}" if p == 80 else f"http://{ip}:{p}"
+                        p = DEFAULT_HTTP_PORT
+                    config_url = f"http://{ip}" if p == DEFAULT_HTTP_PORT else f"http://{ip}:{p}"
                 elif https_port and https_port not in ("", "0"):
                     p = int(https_port) if https_port.isdigit() else 443
                     config_url = f"https://{ip}" if p == 443 else f"https://{ip}:{p}"
@@ -367,7 +528,7 @@ class IntelbrasClient:
             try:
                 titles = await self.get_channel_titles()
                 channels = list(titles.keys())
-            except Exception:
+            except Exception:  # noqa: BLE001
                 channels = []
 
         if not channels:
@@ -382,7 +543,7 @@ class IntelbrasClient:
                 )
                 if resp.status_code == 200 and "presets[" in resp.text:
                     return ch
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             return None
 
@@ -404,25 +565,42 @@ class IntelbrasClient:
             return set()
 
     # ------------------------------------------------------------------
-    # Firmware update
+    # Firmware update (V3.35 CloudUpgrader + legacy upgrade.cgi)
     # ------------------------------------------------------------------
 
     async def check_firmware_update(self) -> dict[str, Any]:
-        """
-        Query the DVR's built-in firmware update check.
+        """Query the DVR's built-in firmware update check.
 
-        Uses ``upgrade.cgi?action=check`` (standard Dahua/Intelbras API).
-        Returns a dict:
-          - "available": bool (True if a newer version is found)
-          - "latest_version": str | None
-          - "release_notes": str | None
-        Falls back gracefully if the endpoint is not supported by the model.
+        Tries HTTP API V3.35 ``POST /cgi-bin/api/CloudUpgrader/check`` first,
+        then falls back to ``GET /cgi-bin/upgrade.cgi?action=check``.
         """
         result: dict[str, Any] = {
             "available": False,
             "latest_version": None,
             "release_notes": None,
         }
+
+        # 1. Try V3.35 CloudUpgrader JSON API (Section 4.12.2)
+        try:
+            resp = await self._post_json(CLOUD_UPGRADER_CHECK_API, {"way": 0}, timeout=8.0)
+            if resp.status_code == 200 and resp.content:
+                data = resp.json()
+                info = data.get("info") if isinstance(data, dict) else None
+                if isinstance(info, dict):
+                    state = str(info.get("State", "None"))
+                    new_ver = info.get("NewVersion")
+                    attention = info.get("Attention")
+                    if state not in ("None", "") and new_ver:
+                        result["available"] = True
+                        result["latest_version"] = str(new_ver).strip()
+                        self._latest_fw_version = result["latest_version"]
+                    if attention:
+                        result["release_notes"] = str(attention).strip()
+                    return result
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("CloudUpgrader check not supported, trying upgrade.cgi: %s", exc)
+
+        # 2. Fallback to legacy upgrade.cgi?action=check
         try:
             resp = await self._get(f"{UPGRADE_CGI}?action=check", timeout=8.0)
             if resp.status_code == 200:
@@ -435,14 +613,30 @@ class IntelbrasClient:
                     result["available"] = True
                 if ver_match:
                     result["latest_version"] = ver_match.group(1).strip()
+                    self._latest_fw_version = result["latest_version"]
                 if notes_match:
                     result["release_notes"] = notes_match.group(1).strip()
         except (DVRConnectionError, DVRAuthError) as exc:
             _LOGGER.debug("DVR firmware check failed/unsupported: %s", exc)
         return result
 
-    async def trigger_firmware_update(self) -> bool:
+    async def trigger_firmware_update(self, version: str | None = None) -> bool:
         """Trigger an online firmware upgrade on the DVR if supported."""
+        target_ver = version or self._latest_fw_version
+        if target_ver:
+            try:
+                resp = await self._post_json(
+                    CLOUD_UPGRADER_EXEC_API,
+                    {"NewVersion": target_ver, "way": 0},
+                    timeout=10.0,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, dict) and data.get("result") is True:
+                        return True
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("CloudUpgrader execute failed, trying upgrade.cgi: %s", exc)
+
         for action in ("upgradeSystem", "start"):
             try:
                 resp = await self._get(f"{UPGRADE_CGI}?action={action}", timeout=10.0)
@@ -503,7 +697,9 @@ class IntelbrasClient:
         profile: int | None = None,
     ) -> bool:
         """Update picture settings for a specific channel across its valid profile(s)."""
-        profiles_to_update = [profile] if profile is not None else self.get_channel_profiles(channel)
+        profiles_to_update = (
+            [profile] if profile is not None else self.get_channel_profiles(channel)
+        )
 
         success = True
         for prof in profiles_to_update:
@@ -596,25 +792,27 @@ class IntelbrasClient:
             return
         b = int(colors.get("Brightness", 0))
         s = int(colors.get("Saturation", 0))
-        # Never overwrite good saved settings with a blacked out picture!
         if b == 0 and s == 0:
             return
         self._saved_video_colors[channel] = dict(colors)
 
     def get_saved_camera_colors(self, channel: int) -> dict[str, int]:
         """Retrieve saved camera picture settings before privacy masking."""
-        default_sat = 80 if self.channel_supports_acutance(channel) else 50
+        default_sat = (
+            DEFAULT_SATURATION_ACUTANCE
+            if self.channel_supports_acutance(channel)
+            else DEFAULT_SATURATION_ANALOG
+        )
         fallback = {
-            "Brightness": 50,
-            "Contrast": 50,
+            "Brightness": DEFAULT_BRIGHTNESS,
+            "Contrast": DEFAULT_CONTRAST,
             "Saturation": default_sat,
-            "Hue": 50,
-            "Acutance": 1,
+            "Hue": DEFAULT_HUE,
+            "Acutance": DEFAULT_ACUTANCE,
         }
         saved = self._saved_video_colors.get(channel)
         if not saved:
             return fallback
-        # Sanity check: if saved values were somehow 0, fallback
         if int(saved.get("Brightness", 0)) == 0 and int(saved.get("Saturation", 0)) == 0:
             return fallback
         return dict(saved)
@@ -625,7 +823,6 @@ class IntelbrasClient:
             return True
 
         if mask:
-            # Only fetch current colors for channels that have not yet been saved
             missing_channels = [ch for ch in channels if ch not in self._saved_video_colors]
             if missing_channels:
                 try:
@@ -636,7 +833,6 @@ class IntelbrasClient:
                 except Exception as exc:  # noqa: BLE001
                     _LOGGER.debug("Could not pre-fetch current colors before mask: %s", exc)
 
-            # Build single batched setConfig request for all channels and profiles
             params: dict[str, Any] = {"action": "setConfig"}
             for ch in channels:
                 profs = self.get_channel_profiles(ch)
@@ -651,28 +847,32 @@ class IntelbrasClient:
 
             resp = await self._get(CONFIG_MANAGER_CGI, params=params)
             return resp.status_code == 200 and "OK" in resp.text
-        else:
-            # Restore all channels using batched setConfig request
-            params = {"action": "setConfig"}
-            for ch in channels:
-                saved = self.get_saved_camera_colors(ch)
-                profs = self.get_channel_profiles(ch)
-                b = saved.get("Brightness", 50)
-                c = saved.get("Contrast", 50)
-                s = saved.get("Saturation", 80 if self.channel_supports_acutance(ch) else 50)
-                h = saved.get("Hue", 50)
-                a = saved.get("Acutance", 1)
-                for prof in profs:
-                    prefix = f"VideoColor[{ch}][{prof}]"
-                    params[f"{prefix}.Brightness"] = b
-                    params[f"{prefix}.Contrast"] = c
-                    params[f"{prefix}.Saturation"] = s
-                    params[f"{prefix}.Hue"] = h
-                    if self.channel_supports_acutance(ch):
-                        params[f"{prefix}.Acutance"] = a
 
-            resp = await self._get(CONFIG_MANAGER_CGI, params=params)
-            return resp.status_code == 200 and "OK" in resp.text
+        params = {"action": "setConfig"}
+        for ch in channels:
+            saved = self.get_saved_camera_colors(ch)
+            profs = self.get_channel_profiles(ch)
+            b = saved.get("Brightness", DEFAULT_BRIGHTNESS)
+            c = saved.get("Contrast", DEFAULT_CONTRAST)
+            s = saved.get(
+                "Saturation",
+                DEFAULT_SATURATION_ACUTANCE
+                if self.channel_supports_acutance(ch)
+                else DEFAULT_SATURATION_ANALOG,
+            )
+            h = saved.get("Hue", DEFAULT_HUE)
+            a = saved.get("Acutance", DEFAULT_ACUTANCE)
+            for prof in profs:
+                prefix = f"VideoColor[{ch}][{prof}]"
+                params[f"{prefix}.Brightness"] = b
+                params[f"{prefix}.Contrast"] = c
+                params[f"{prefix}.Saturation"] = s
+                params[f"{prefix}.Hue"] = h
+                if self.channel_supports_acutance(ch):
+                    params[f"{prefix}.Acutance"] = a
+
+        resp = await self._get(CONFIG_MANAGER_CGI, params=params)
+        return resp.status_code == 200 and "OK" in resp.text
 
     # ------------------------------------------------------------------
     # Recording modes
@@ -715,7 +915,7 @@ class IntelbrasClient:
         self,
         channels: list[int],
     ) -> tuple[dict[int, dict[str, int]], dict[int, int], dict[int, dict[str, Any]]]:
-        """Fetch VideoColor, RecordMode, and Encode settings in a single HTTP request using combined name parameters."""
+        """Fetch VideoColor, RecordMode, and Encode settings in a single HTTP request."""
         resp = await self._get(
             CONFIG_MANAGER_CGI,
             params={"action": "getConfig", "name": ["VideoColor", "RecordMode", "Encode"]},
@@ -725,7 +925,6 @@ class IntelbrasClient:
 
         colors: dict[int, dict[str, int]] = {}
         modes: dict[int, int] = {}
-        encode_info: dict[int, dict[str, Any]] = {}
 
         vc_pattern = re.compile(
             r"table\.VideoColor\[(\d+)\](?:\[(\d+)\])?\.([A-Za-z]+)=(\d+)"
@@ -787,7 +986,7 @@ class IntelbrasClient:
                 )
                 ch_dict["main"][prop] = val
                 if prop == "AudioEnable":
-                    ch_dict["audio_enable"] = (val.lower() == "true")
+                    ch_dict["audio_enable"] = val.lower() == "true"
                 elif prop == "Audio.Compression":
                     ch_dict["audio_compression"] = val
                 elif prop == "Video.Compression":
@@ -854,14 +1053,9 @@ class IntelbrasClient:
             cfg = cfg_all.get(ch0, {})
 
         has_audio = cfg.get("audio_enable", False)
-
-        # If channel has no audio recorded, direct RTSP passthrough from DVR is fastest and lightest
         if not has_audio:
             return dvr_playback_url, False
 
-        # If channel has audio recorded, browsers & Home Assistant HLS fMP4 require AAC audio
-        # with proper extradata headers, and #async prevents FFmpeg probe deadlocks.
-        # #video=copy preserves native resolution & codec (H.264 / H.265) without recompression.
         src = f"ffmpeg:{dvr_playback_url}#video=copy#audio=aac#async"
         return src, True
 
@@ -961,15 +1155,23 @@ class IntelbrasClient:
         return resp.status_code == 200 and "OK" in resp.text
 
     async def async_disable_auto_logout(self) -> bool:
-        """Disable AutoLogout on the DVR to prevent IP cameras from sleeping/hibernating."""
-        resp = await self._get(
-            CONFIG_MANAGER_CGI,
-            params={
-                "action": "setConfig",
-                "table.General.AutoLogout": 0,
-            },
-        )
-        return resp.status_code == 200 and "OK" in resp.text
+        """Disable AutoLogout on the DVR (V3.35 GUISet[0].AutoLogout and General.AutoLogout)."""
+        ok = False
+        for param_key in ("GUISet[0].AutoLogout", "General.AutoLogout"):
+            try:
+                resp = await self._get(
+                    CONFIG_MANAGER_CGI,
+                    params={
+                        "action": "setConfig",
+                        param_key: 0,
+                    },
+                    timeout=4.0,
+                )
+                if resp.status_code == 200 and "OK" in resp.text:
+                    ok = True
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("AutoLogout setting %s skipped: %s", param_key, exc)
+        return ok
 
     # ------------------------------------------------------------------
     # Events & Alarms
@@ -1028,10 +1230,18 @@ class IntelbrasClient:
         Eliminates repeated per-request logins in the DVR audit log.
         """
         if codes is None:
-            codes = ["VideoMotion", "SmartMotionHuman", "SmartMotionVehicle", "VideoLoss", "VideoBlind"]
+            codes = [
+                "VideoMotion",
+                "SmartMotionHuman",
+                "SmartMotionVehicle",
+                "VideoLoss",
+                "VideoBlind",
+            ]
 
         codes_param = f"[{','.join(codes)}]"
-        stream_path = f"{EVENT_MANAGER_CGI}?action=attach&codes={codes_param}&heartbeat={heartbeat}"
+        stream_path = (
+            f"{EVENT_MANAGER_CGI}?action=attach&codes={codes_param}&heartbeat={heartbeat}"
+        )
         url = self.base_url + stream_path
 
         event_line_re = re.compile(
@@ -1052,8 +1262,10 @@ class IntelbrasClient:
             timeout=httpx.Timeout(connect=10.0, read=None, write=10.0, pool=None),
         ) as stream_client:
             async with stream_client.stream("GET", url) as response:
-                if response.status_code == 401:
-                    raise DVRAuthError("Unauthorized connecting to DVR event stream (401)")
+                if response.status_code in (401, 403):
+                    raise DVRAuthError(
+                        f"Unauthorized connecting to DVR event stream ({response.status_code})"
+                    )
                 if response.status_code != 200:
                     raise DVRConnectionError(
                         f"DVR event stream returned unexpected HTTP status {response.status_code}"
@@ -1069,13 +1281,15 @@ class IntelbrasClient:
                         _LOGGER.warning("DVR event stream closed by remote server.")
                         break
                     except asyncio.TimeoutError:
-                        _LOGGER.warning("DVR event stream missed heartbeats for 25s; reconnecting...")
+                        _LOGGER.warning(
+                            "DVR event stream missed heartbeats for 25s; reconnecting..."
+                        )
                         break
 
                     if heartbeat_callback is not None:
                         try:
                             heartbeat_callback()
-                        except Exception:
+                        except Exception:  # noqa: BLE001
                             pass
 
                     line = line.strip()
@@ -1109,13 +1323,28 @@ class IntelbrasClient:
     # Streaming & Snapshots
     # ------------------------------------------------------------------
 
-    def get_rtsp_url(self, channel: int, subtype: int = 0) -> str:
-        """Return the RTSP stream URL for a given channel and stream type."""
+    def get_rtsp_url(
+        self,
+        channel: int,
+        subtype: int = 0,
+        rtsp_port: int | None = None,
+    ) -> str:
+        """Return the RTSP live stream URL for a given 0-based channel index and subtype."""
         user_enc = urllib.parse.quote(self.username, safe="")
         pass_enc = urllib.parse.quote(self.password, safe="")
-        port = self.rtsp_port if self.rtsp_port != DEFAULT_RTSP_PORT else 554
+        port = rtsp_port or self.rtsp_port or DEFAULT_RTSP_PORT
         path = RTSP_LIVE_PATH.format(channel=channel + 1, subtype=subtype)
         return f"rtsp://{user_enc}:{pass_enc}@{self.host}:{port}{path}"
+
+    def live_rtsp_url(
+        self,
+        channel: int,
+        subtype: int = 0,
+        rtsp_port: int | None = None,
+    ) -> str:
+        """Return the RTSP live stream URL for a 1-based channel number."""
+        ch0 = channel - 1 if channel >= 1 else channel
+        return self.get_rtsp_url(ch0, subtype=subtype, rtsp_port=rtsp_port)
 
     def get_snapshot_url(self, channel: int) -> str:
         """Return the HTTP snapshot URL for a given channel (0-based index)."""
@@ -1138,15 +1367,27 @@ class IntelbrasClient:
         return await self.get_snapshot(ch0, timeout=timeout)
 
     # ------------------------------------------------------------------
-    # Playback & Recordings search
+    # Playback & Recordings search (HTTP API V3.35 Section 4.10.5)
     # ------------------------------------------------------------------
+
+    async def _close_and_destroy_finder(self, token: int) -> None:
+        """Properly close and destroy a mediaFileFind object handle per V3.35 spec."""
+        for action in ("close", "destroy"):
+            try:
+                await self._get(
+                    MEDIAFILEFIND_CGI,
+                    params={"action": action, "object": token},
+                    timeout=3.0,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     async def find_earliest_recording_date(
         self,
         channel: int,
         stream_type: str = "main",
     ) -> date | None:
-        """Find the earliest available recording date for a channel on the DVR."""
+        """Find the earliest available recording date for a 1-based channel on the DVR."""
         if channel in self._earliest_date_cache:
             return self._earliest_date_cache[channel]
 
@@ -1206,16 +1447,13 @@ class IntelbrasClient:
                         self._dvr_earliest_date = found_date
                     return found_date
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("Failed finding earliest recording date for channel %d: %s", channel, exc)
+            _LOGGER.debug(
+                "Failed finding earliest recording date for channel %d: %s",
+                channel,
+                exc,
+            )
         finally:
-            try:
-                await self._get(
-                    MEDIAFILEFIND_CGI,
-                    params={"action": "destroy", "object": token},
-                    timeout=3.0,
-                )
-            except Exception:  # noqa: BLE001
-                pass
+            await self._close_and_destroy_finder(token)
 
         return self._dvr_earliest_date
 
@@ -1247,26 +1485,22 @@ class IntelbrasClient:
             return []
         token = int(token_match.group(1))
 
-        start_enc = urllib.parse.quote(condition["StartTime"], safe=":")
-        end_enc = urllib.parse.quote(condition["EndTime"], safe=":")
-        find_path = (
-            f"{MEDIAFILEFIND_CGI}?action=findFile&object={token}"
-            f"&condition.Channel={condition['Channel']}"
-            f"&condition.StartTime={start_enc}"
-            f"&condition.EndTime={end_enc}"
-            f"&condition.Types%5B0%5D=dav"
-            f"&condition.VideoStream={condition['VideoStream']}"
-        )
-        find_file_resp = await self._get(find_path)
-        if find_file_resp.status_code != 200 or "OK" not in find_file_resp.text:
-            await self._get(
-                MEDIAFILEFIND_CGI,
-                params={"action": "destroy", "object": token},
-            )
-            return []
-
         recordings: list[Recording] = []
         try:
+            start_enc = urllib.parse.quote(condition["StartTime"], safe=":")
+            end_enc = urllib.parse.quote(condition["EndTime"], safe=":")
+            find_path = (
+                f"{MEDIAFILEFIND_CGI}?action=findFile&object={token}"
+                f"&condition.Channel={condition['Channel']}"
+                f"&condition.StartTime={start_enc}"
+                f"&condition.EndTime={end_enc}"
+                f"&condition.Types%5B0%5D=dav"
+                f"&condition.VideoStream={condition['VideoStream']}"
+            )
+            find_file_resp = await self._get(find_path)
+            if find_file_resp.status_code != 200 or "OK" not in find_file_resp.text:
+                return []
+
             while True:
                 find_resp = await self._get(
                     MEDIAFILEFIND_CGI,
@@ -1286,10 +1520,7 @@ class IntelbrasClient:
                 if len(page) < _FIND_PAGE_SIZE:
                     break
         finally:
-            await self._get(
-                MEDIAFILEFIND_CGI,
-                params={"action": "destroy", "object": token},
-            )
+            await self._close_and_destroy_finder(token)
 
         return recordings
 
@@ -1336,7 +1567,7 @@ class IntelbrasClient:
         """Generate RTSP playback URL for a historical time range (expects 1-based channel)."""
         user_enc = urllib.parse.quote(self.username, safe="")
         pass_enc = urllib.parse.quote(self.password, safe="")
-        port = rtsp_port or (self.rtsp_port if self.rtsp_port != DEFAULT_RTSP_PORT else 554)
+        port = rtsp_port or self.rtsp_port or DEFAULT_RTSP_PORT
         st = start_time.strftime(_PLAYBACK_TIME_FMT)
         et = end_time.strftime(_PLAYBACK_TIME_FMT)
         path = RTSP_PLAYBACK_PATH.format(

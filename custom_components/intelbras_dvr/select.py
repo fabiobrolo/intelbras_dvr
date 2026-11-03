@@ -1,19 +1,24 @@
-"""Select entity for choosing the physical monitor output split mode."""
+"""Select entities for physical monitor output split mode, recording mode, and PTZ presets."""
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
+from typing import TYPE_CHECKING
 
-from homeassistant.components.select import SelectEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+if TYPE_CHECKING:
+    from . import IntelbrasDVRConfigEntry
 from .const import (
     CONF_CHANNELS,
     CONF_FEATURES,
     CONF_PTZ_CHANNELS,
-    DOMAIN,
+    RECORD_MODE_MANUAL,
+    RECORD_MODE_OFF,
+    RECORD_MODE_SCHEDULE,
     CameraFeature,
 )
 from .coordinator import IntelbrasCoordinator
@@ -22,37 +27,46 @@ from .ptz import PTZPresetSelect
 
 _LOGGER = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Option definitions
-# Each entry: (label, cgi_mode, group_index)
-#
-# The DVR API uses:
-#   split1  -> single channel view (group = channel 0-based index in selected list)
-#   split4  -> 4-channel quad  (group selects the block of 4)
-#   split8  -> 8-channel view  (group selects the block of 8)
-#   split9  -> 9-channel view  (group selects the block of 9)
-#   split16 -> 16-channel view (group = 0)
-# ---------------------------------------------------------------------------
+MONITOR_SELECT_DESCRIPTION = SelectEntityDescription(
+    key="monitor_select",
+    translation_key="monitor_select",
+    icon="mdi:monitor-multiple",
+)
 
-# Fixed split-mode options (label, mode, group)
-_FIXED_OPTIONS: list[tuple[str, str, int]] = [
-    ("Visualização de 4: 1-4",  "split4", 0),
-    ("Visualização de 4: 5-8",  "split4", 1),
-    ("Visualização de 4: 9-12", "split4", 2),
-    ("Visualização de 8: 1-8",  "split8", 0),
-    ("Visualização de 8: 5-12", "split8", 1),
-    ("Visualização de 9: 1-9",  "split9", 0),
-    ("Visualização de 9: 4-12", "split9", 1),
-    ("Visualização de 16",      "split16", 0),
-]
+RECORD_MODE_OPTIONS: list[str] = ["schedule", "manual", "off"]
+
+RECORD_MODE_DESCRIPTION = SelectEntityDescription(
+    key="record_mode",
+    translation_key="record_mode",
+    icon="mdi:record-rec",
+    options=RECORD_MODE_OPTIONS,
+)
+
+RECORD_MODE_TO_DVR: dict[str, int] = {
+    "schedule": RECORD_MODE_SCHEDULE,
+    "manual": RECORD_MODE_MANUAL,
+    "off": RECORD_MODE_OFF,
+    # Backward compatibility with legacy option strings
+    "Agendado": RECORD_MODE_SCHEDULE,
+    "Manual / Contínuo": RECORD_MODE_MANUAL,
+    "Desativado": RECORD_MODE_OFF,
+    "agendado": RECORD_MODE_SCHEDULE,
+    "desativado": RECORD_MODE_OFF,
+}
+
+DVR_TO_RECORD_MODE: dict[int, str] = {
+    RECORD_MODE_SCHEDULE: "schedule",
+    RECORD_MODE_MANUAL: "manual",
+    RECORD_MODE_OFF: "off",
+}
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: IntelbrasDVRConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up monitor output select and PTZ preset selectors."""
+    """Set up monitor output select, recording mode selects, and PTZ preset selectors."""
     coordinator: IntelbrasCoordinator = entry.runtime_data.coordinator
     channels: list[int] = entry.data.get(CONF_CHANNELS, [])
     ptz_channels: list[int] = entry.data.get(CONF_PTZ_CHANNELS, [])
@@ -79,39 +93,114 @@ async def async_setup_entry(
 class MonitorSplitSelect(DVREntity, SelectEntity):
     """Select entity controlling the split/view mode of the DVR's physical monitor output."""
 
-    _attr_translation_key = "monitor_select"
-    _attr_icon = "mdi:monitor-multiple"
+    entity_description: SelectEntityDescription = MONITOR_SELECT_DESCRIPTION
 
     def __init__(
         self,
         coordinator: IntelbrasCoordinator,
-        entry: ConfigEntry,
+        entry: IntelbrasDVRConfigEntry,
         channels: list[int],
         channel_names: dict[int, str],
     ) -> None:
-        """Initialise the select entity."""
+        """Initialise the monitor split select entity."""
         super().__init__(coordinator, entry)
         self._channels = sorted(channels)
         self._channel_names = channel_names
         self._attr_unique_id = f"{entry.entry_id}_monitor_select"
         self._optimistic_option: str | None = None
-
-        # Build option list:
-        #   1. "Visualização de 1: <camera name>" for each configured channel
-        #   2. Fixed split-mode options
         self._label_to_action: dict[str, tuple[str, int]] = {}
+        self._action_to_label: dict[tuple[str, int], str] = {}
+        self._rebuild_options()
+
+    def _get_templates(self) -> tuple[str, str, str]:
+        """Return localized templates (single_view, range_view, full_view)."""
+        runtime = getattr(self._entry, "runtime_data", None)
+        trans: dict[str, str] = getattr(runtime, "translations", {}) if runtime else {}
+        prefix = "component.intelbras_dvr.selector.monitor_view_format.options."
+        single_tpl = trans.get(f"{prefix}single_view")
+        range_tpl = trans.get(f"{prefix}range_view")
+        full_tpl = trans.get(f"{prefix}full_view")
+        if single_tpl and range_tpl and full_tpl:
+            return single_tpl, range_tpl, full_tpl
+
+        lang = ""
+        if self.coordinator and self.coordinator.hass:
+            lang = (self.coordinator.hass.config.language or "").lower()
+        if lang.startswith("pt"):
+            return (
+                "Visualização de 1: {name}",
+                "Visualização de {count}: {start}-{end}",
+                "Visualização de {count}",
+            )
+        return (
+            "View 1: {name}",
+            "View {count}: {start}-{end}",
+            "View {count}",
+        )
+
+    def _rebuild_options(self) -> None:
+        """Dynamically build monitor split options from DVR capabilities and active channels."""
+        single_tpl, range_tpl, full_tpl = self._get_templates()
+        self._label_to_action.clear()
+        self._action_to_label.clear()
         option_labels: list[str] = []
 
-        all_ch = sorted(self._channel_names.keys())
+        all_ch = sorted(self._channel_names.keys()) or self._channels
         for idx, ch in enumerate(all_ch):
             cam_name = self._channel_names.get(ch, f"Channel {ch + 1}")
-            label = f"Visualização de 1: {cam_name}"
-            self._label_to_action[label] = ("split1", idx)
+            label = single_tpl.format(name=cam_name)
+            action = ("split1", idx)
+            self._label_to_action[label] = action
+            self._action_to_label[action] = label
             option_labels.append(label)
+            # Register alternate language aliases for automation compatibility
+            self._label_to_action[f"Visualização de 1: {cam_name}"] = action
+            self._label_to_action[f"View 1: {cam_name}"] = action
+            self._label_to_action[f"split1:{idx}"] = action
 
-        for label, mode, group in _FIXED_OPTIONS:
-            self._label_to_action[label] = (mode, group)
-            option_labels.append(label)
+        data = self.coordinator.data or {}
+        monitor_caps: list[int] = list(data.get("monitor_caps") or [1, 4, 8, 9, 16])
+        max_ch_idx = max(
+            int(data.get("total_channels") or 0),
+            (max(all_ch) + 1) if all_ch else 0,
+            4,
+        )
+        # Round effective channel span to standard DVR block boundary (4, 8, 12, 16, 24, 32)
+        effective_total = max(4, math.ceil(max_ch_idx / 4) * 4)
+
+        for split_num in sorted(set(monitor_caps)):
+            if split_num <= 1:
+                continue
+            mode = f"split{split_num}"
+            if split_num >= effective_total:
+                label = full_tpl.format(count=split_num)
+                action = (mode, 0)
+                self._label_to_action[label] = action
+                self._action_to_label[action] = label
+                option_labels.append(label)
+                self._label_to_action[f"Visualização de {split_num}"] = action
+                self._label_to_action[f"View {split_num}"] = action
+                self._label_to_action[mode] = action
+                self._label_to_action[f"{mode}:0"] = action
+            else:
+                num_groups = math.ceil(effective_total / split_num)
+                for group in range(num_groups):
+                    if (group + 1) * split_num <= effective_total:
+                        start = group * split_num + 1
+                        end = (group + 1) * split_num
+                    else:
+                        start = max(1, effective_total - split_num + 1)
+                        end = effective_total
+                    label = range_tpl.format(count=split_num, start=start, end=end)
+                    action = (mode, group)
+                    self._label_to_action[label] = action
+                    self._action_to_label[action] = label
+                    option_labels.append(label)
+                    self._label_to_action[
+                        f"Visualização de {split_num}: {start}-{end}"
+                    ] = action
+                    self._label_to_action[f"View {split_num}: {start}-{end}"] = action
+                    self._label_to_action[f"{mode}:{group}"] = action
 
         self._attr_options = option_labels
 
@@ -122,31 +211,22 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
             return self._optimistic_option
 
         mode_data: dict = (self.coordinator.data or {}).get("monitor_mode", {})
-        mode: str = str(mode_data.get("mode", "split8")).strip()
+        if not mode_data:
+            return None
+        mode: str = str(mode_data.get("mode", "")).strip()
+        if not mode:
+            return None
         try:
             group: int = int(mode_data.get("group", 0))
         except (ValueError, TypeError):
             group = 0
 
-        if mode == "split1":
-            # Map group index back to channel label
-            all_ch = sorted(self._channel_names.keys())
-            if group < len(all_ch):
-                ch = all_ch[group]
-                cam_name = self._channel_names.get(ch, f"Channel {ch + 1}")
-                return f"Visualização de 1: {cam_name}"
-            return None
-
-        # Find a matching fixed option
-        for label, m, g in _FIXED_OPTIONS:
-            if m == mode and g == group:
-                return label
-
-        return None
+        return self._action_to_label.get((mode, group))
 
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         self._optimistic_option = None
+        self._rebuild_options()
         super()._handle_coordinator_update()
 
     async def async_select_option(self, option: str) -> None:
@@ -156,15 +236,15 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
             _LOGGER.warning("Unknown monitor option selected: %s", option)
             return
         mode, group = action
+        canonical_label = self._action_to_label.get(action, option)
 
-        self._optimistic_option = option
+        self._optimistic_option = canonical_label
         self.async_write_ha_state()
 
         ok = await self.coordinator.client.set_monitor_split(mode=mode, group=group)
         if ok:
-            if self.coordinator.data and "monitor_mode" in self.coordinator.data:
+            if self.coordinator.data is not None:
                 self.coordinator.data["monitor_mode"] = {"mode": mode, "group": group}
-            # Wait 1.0s for DVR hardware HDMI/VGA output to transition before refreshing
             await asyncio.sleep(1.0)
             await self.coordinator.async_request_refresh()
         else:
@@ -173,37 +253,15 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
             _LOGGER.error("Failed to set monitor to '%s'.", option)
 
 
-RECORD_MODE_OPTIONS: list[str] = ["schedule", "manual", "off"]
-RECORD_MODE_TO_DVR: dict[str, int] = {
-    "schedule": 0,
-    "manual": 1,
-    "off": 2,
-    # Backward compatibility with legacy Portuguese option strings
-    "Agendado": 0,
-    "Manual / Contínuo": 1,
-    "Desativado": 2,
-    "agendado": 0,
-    "manual": 1,
-    "desativado": 2,
-}
-DVR_TO_RECORD_MODE: dict[int, str] = {
-    0: "schedule",
-    1: "manual",
-    2: "off",
-}
-
-
 class CameraRecordModeSelect(CameraChannelEntity, SelectEntity):
     """Select entity for changing the recording mode of a camera channel."""
 
-    _attr_translation_key = "record_mode"
-    _attr_icon = "mdi:record-rec"
-    _attr_options = RECORD_MODE_OPTIONS
+    entity_description: SelectEntityDescription = RECORD_MODE_DESCRIPTION
 
     def __init__(
         self,
         coordinator: IntelbrasCoordinator,
-        entry: ConfigEntry,
+        entry: IntelbrasDVRConfigEntry,
         channel: int,
         channel_name: str,
     ) -> None:
@@ -218,7 +276,7 @@ class CameraRecordModeSelect(CameraChannelEntity, SelectEntity):
         if self._optimistic_option is not None:
             return self._optimistic_option
         modes: dict[int, int] = (self.coordinator.data or {}).get("record_modes", {})
-        mode_val = modes.get(self._channel, 0)
+        mode_val = modes.get(self._channel, RECORD_MODE_SCHEDULE)
         return DVR_TO_RECORD_MODE.get(mode_val, "schedule")
 
     def _handle_coordinator_update(self) -> None:
@@ -233,7 +291,8 @@ class CameraRecordModeSelect(CameraChannelEntity, SelectEntity):
             _LOGGER.warning("Unknown record mode option: %s", option)
             return
 
-        self._optimistic_option = option
+        canonical_opt = DVR_TO_RECORD_MODE.get(mode_val, "schedule")
+        self._optimistic_option = canonical_opt
         self.async_write_ha_state()
 
         ok = await self.coordinator.client.set_record_mode(self._channel, mode_val)
@@ -246,4 +305,8 @@ class CameraRecordModeSelect(CameraChannelEntity, SelectEntity):
         else:
             self._optimistic_option = None
             self.async_write_ha_state()
-            _LOGGER.error("Failed to set record mode to '%s' on channel %d.", option, self._channel)
+            _LOGGER.error(
+                "Failed to set record mode to '%s' on channel %d.",
+                option,
+                self._channel,
+            )

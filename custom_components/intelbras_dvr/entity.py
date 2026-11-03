@@ -1,85 +1,90 @@
-"""Base entity classes for the Intelbras DVR integration."""
+"""Base entity classes and structured DeviceInfo builders for the Intelbras DVR integration."""
 from __future__ import annotations
 
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_HTTP_PORT, DEFAULT_HTTP_PORT, DOMAIN
-from .coordinator import IntelbrasCoordinator
+from .const import CONF_FEATURES, CONF_HTTP_PORT, DEFAULT_HTTP_PORT, DOMAIN
+from .coordinator import IntelbrasCoordinator, IntelbrasEventCoordinator
 
 
 def dvr_device_info(entry: ConfigEntry, coordinator: IntelbrasCoordinator) -> DeviceInfo:
-    """Return DeviceInfo for the DVR parent device."""
+    """Return structured DeviceInfo for the DVR parent device."""
     sys_info: dict[str, str] = (coordinator.data or {}).get("system_info", {})
+    host = entry.data.get(CONF_HOST, "")
+    http_port = entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT)
+    config_url = (
+        f"http://{host}"
+        if http_port == DEFAULT_HTTP_PORT
+        else f"http://{host}:{http_port}"
+    )
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
         name=entry.title,
         manufacturer="Intelbras",
-        model=sys_info.get("updateSerial", "DVR"),
+        model=sys_info.get("updateSerial") or sys_info.get("deviceType") or "DVR",
         serial_number=sys_info.get("serialNumber"),
         sw_version=(coordinator.data or {}).get("software_version"),
-        configuration_url=(
-            f"http://{entry.data['host']}"
-            f":{entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT)}"
-        ),
+        configuration_url=config_url if host else None,
     )
 
 
 def camera_device_info(
     entry: ConfigEntry,
-    coordinator: Any = None,
+    coordinator: IntelbrasCoordinator | IntelbrasEventCoordinator | None = None,
     channel: int = 0,
     channel_name: str = "",
-    **kwargs: Any,
 ) -> DeviceInfo:
-    """Return DeviceInfo for a camera child device linked to the DVR."""
-    ch = kwargs.get("channel", channel)
-    name = kwargs.get("channel_name", channel_name)
-    
-    # Retrieve remote device metadata if available
-    remote_info = {}
-    if coordinator and getattr(coordinator, "data", None):
-        remote_info = (coordinator.data.get("remote_devices") or {}).get(ch, {})
+    """Return structured DeviceInfo for a camera child device linked to the DVR."""
+    main_coord: IntelbrasCoordinator | None = None
+    if isinstance(coordinator, IntelbrasCoordinator):
+        main_coord = coordinator
+    elif isinstance(coordinator, IntelbrasEventCoordinator):
+        main_coord = coordinator.main_coordinator
 
-    manufacturer = remote_info.get("manufacturer") or "Intelbras"
-    model = remote_info.get("model") or f"HDCVI (CH {ch + 1})"
-    sw_version = remote_info.get("software_version")
-    serial_number = remote_info.get("serial_number")
-    config_url = remote_info.get("configuration_url")
-    if not config_url and entry.data.get("host"):
-        # For analog cameras, point to DVR web interface
-        http_p = entry.data.get("http_port", 80)
-        config_url = f"http://{entry.data['host']}" if http_p == 80 else f"http://{entry.data['host']}:{http_p}"
+    remote_info: dict[str, Any] = {}
+    if main_coord and main_coord.data:
+        remote_info = (main_coord.data.get("remote_devices") or {}).get(channel, {})
 
-    info_kwargs: dict[str, Any] = {
-        "identifiers": {(DOMAIN, f"{entry.entry_id}_ch{ch}")},
-        "name": name,
-        "manufacturer": manufacturer,
-        "model": model,
-    }
-    if sw_version:
-        info_kwargs["sw_version"] = sw_version
-    if serial_number:
-        info_kwargs["serial_number"] = serial_number
-    if config_url:
-        info_kwargs["configuration_url"] = config_url
+    sig_format = "HDCVI"
+    if main_coord and hasattr(main_coord, "client"):
+        sig_format = main_coord.client.get_channel_signal_format(channel)
+    elif coordinator and hasattr(coordinator, "client"):
+        sig_format = coordinator.client.get_channel_signal_format(channel)
 
-    info = DeviceInfo(**info_kwargs)
-    if coordinator and hasattr(coordinator, "hass"):
-        from homeassistant.helpers import device_registry as dr
-        dev_reg = dr.async_get(coordinator.hass)
-        if hasattr(dev_reg, "async_get_device_by_identifier"):
-            parent = dev_reg.async_get_device_by_identifier((DOMAIN, entry.entry_id), entry.entry_id)
-        else:
-            parent = dev_reg.async_get_device(identifiers={(DOMAIN, entry.entry_id)})
-        if parent:
-            info["via_device_id"] = parent.id
-            return info
-    
-    info["via_device"] = (DOMAIN, entry.entry_id)  # type: ignore[typeddict-item]
+    manufacturer: str = remote_info.get("manufacturer") or "Intelbras"
+    model: str = remote_info.get("model") or f"{sig_format} (CH {channel + 1})"
+    sw_version: str | None = remote_info.get("software_version")
+    serial_number: str | None = remote_info.get("serial_number")
+    config_url: str | None = remote_info.get("configuration_url")
+
+    host = entry.data.get(CONF_HOST, "")
+    if not config_url and host:
+        http_port = entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT)
+        config_url = (
+            f"http://{host}"
+            if http_port == DEFAULT_HTTP_PORT
+            else f"http://{host}:{http_port}"
+        )
+
+    runtime = getattr(entry, "runtime_data", None)
+    dvr_dev_id: str | None = getattr(runtime, "dvr_device_id", None) if runtime else None
+
+    info = DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_ch{channel}")},
+        name=channel_name or f"Channel {channel + 1}",
+        manufacturer=manufacturer,
+        model=model,
+        sw_version=sw_version,
+        serial_number=serial_number,
+        configuration_url=config_url,
+    )
+    if dvr_dev_id:
+        info["via_device_id"] = dvr_dev_id
     return info
 
 
@@ -116,24 +121,22 @@ class CameraChannelEntity(CoordinatorEntity[IntelbrasCoordinator]):
         self._entry = entry
         self._channel = channel
         self._channel_name = channel_name
-        self._attr_device_info = camera_device_info(entry, coordinator, channel, channel_name)
-
-    @property
-    def _event_data(self) -> dict[str, bool]:
-        """Return the current alarm/event state for this channel."""
-        events: dict = (self.coordinator.data or {}).get("event_status", {})
-        return events.get(self._channel, {})
+        self._attr_device_info = camera_device_info(
+            entry=entry,
+            coordinator=coordinator,
+            channel=channel,
+            channel_name=channel_name,
+        )
 
     @property
     def _video_color(self) -> dict[str, int]:
         """Return the current picture settings for this channel."""
-        colors: dict = (self.coordinator.data or {}).get("video_color", {})
+        colors: dict[int, dict[str, int]] = (self.coordinator.data or {}).get(
+            "video_color", {}
+        )
         return colors.get(self._channel, {})
 
     def _is_feature_enabled(self, feature: str) -> bool:
         """Return True if the given feature is enabled for this channel."""
-        from .const import CONF_FEATURES
-
         features_map: dict[str, list[str]] = self._entry.data.get(CONF_FEATURES, {})
         return feature in features_map.get(str(self._channel), [])
-

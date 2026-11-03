@@ -27,9 +27,11 @@ from homeassistant.util import dt as dt_util
 from .const import (
     CONF_CHANNELS,
     CONF_RTSP_PORT,
+    DEFAULT_GO2RTC_RTSP_PORT,
     DEFAULT_RTSP_PORT,
     DOMAIN,
     HLS_MIME,
+    MEDIA_BROWSE_DAYS,
     MEDIA_SLICE_MINUTES,
 )
 from .dvr import IntelbrasClient
@@ -48,7 +50,7 @@ _COMPACT_FMT = "%Y%m%d%H%M%S"
 _DAY_FMT = "%Y%m%d"
 
 
-async def async_get_media_source(hass: HomeAssistant) -> "IntelbrasMediaSource":
+async def async_get_media_source(hass: HomeAssistant) -> IntelbrasMediaSource:
     """Register the DVR media source."""
     return IntelbrasMediaSource(hass)
 
@@ -59,6 +61,7 @@ class IntelbrasMediaSource(MediaSource):
     name = "Intelbras DVR"
 
     def __init__(self, hass: HomeAssistant) -> None:
+        """Initialise the media source."""
         super().__init__(DOMAIN)
         self.hass = hass
         self._earliest_date_cache: dict[tuple[str, int], tuple[float, date]] = {}
@@ -67,6 +70,13 @@ class IntelbrasMediaSource(MediaSource):
         """Return True if the Home Assistant language is Portuguese."""
         lang = (getattr(self.hass.config, "language", "") or "").lower()
         return lang.startswith("pt")
+
+    def _translate(self, entry: ConfigEntry, key: str, default: str) -> str:
+        """Return a translated media browser label from runtime translations."""
+        runtime = getattr(entry, "runtime_data", None)
+        trans: dict[str, str] = getattr(runtime, "translations", {}) if runtime else {}
+        full_key = f"component.{DOMAIN}.selector.media_browser.options.{key}"
+        return trans.get(full_key, default)
 
     def _entries(self) -> list[ConfigEntry]:
         return [
@@ -77,7 +87,11 @@ class IntelbrasMediaSource(MediaSource):
 
     def _client(self, entry_id: str) -> tuple[ConfigEntry, IntelbrasClient]:
         entry = self.hass.config_entries.async_get_entry(entry_id)
-        if entry is None or not hasattr(entry, "runtime_data") or entry.runtime_data is None:
+        if (
+            entry is None
+            or not hasattr(entry, "runtime_data")
+            or entry.runtime_data is None
+        ):
             raise Unresolvable("DVR is not loaded")
         return entry, entry.runtime_data.client
 
@@ -94,7 +108,9 @@ class IntelbrasMediaSource(MediaSource):
             return go2rtc_data
         if isinstance(go2rtc_data, dict) and isinstance(go2rtc_data.get("url"), str):
             return go2rtc_data["url"]
-        if hasattr(go2rtc_data, "url") and isinstance(getattr(go2rtc_data, "url"), str):
+        if hasattr(go2rtc_data, "url") and isinstance(
+            getattr(go2rtc_data, "url"), str
+        ):
             return getattr(go2rtc_data, "url")
 
         domain_data = self.hass.data.setdefault(DOMAIN, {})
@@ -140,18 +156,29 @@ class IntelbrasMediaSource(MediaSource):
     ) -> tuple[str, str | None]:
         """Ensure playback RTSP stream has browser-compatible AAC audio using go2rtc if needed."""
         try:
-            src, needs_go2rtc = await client.get_channel_playback_directive(channel, dvr_playback_url)
+            src, needs_go2rtc = await client.get_channel_playback_directive(
+                channel, dvr_playback_url
+            )
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("Error querying dynamic playback directive for channel %s: %s", channel, exc)
+            _LOGGER.debug(
+                "Error querying dynamic playback directive for channel %s: %s",
+                channel,
+                exc,
+            )
             src, needs_go2rtc = dvr_playback_url, False
 
         if not needs_go2rtc:
-            _LOGGER.debug("Channel %s using direct DVR RTSP (no audio recorded in DVR)", channel)
+            _LOGGER.debug(
+                "Channel %s using direct DVR RTSP (no audio recorded in DVR)",
+                channel,
+            )
             return dvr_playback_url, None
 
         go2rtc_url = await self._resolve_go2rtc_url()
         if not go2rtc_url:
-            _LOGGER.debug("No go2rtc URL configured in Home Assistant; falling back to direct DVR RTSP")
+            _LOGGER.debug(
+                "No go2rtc URL configured in Home Assistant; falling back to direct DVR RTSP"
+            )
             return dvr_playback_url, None
 
         try:
@@ -161,12 +188,19 @@ class IntelbrasMediaSource(MediaSource):
                 return dvr_playback_url, None
 
             stream_name = f"intelbras_playback_{entry_id}_{channel}"
-            put_api = f"{go2rtc_url.rstrip('/')}/api/streams?name={stream_name}&src={urllib.parse.quote(src)}"
+            put_api = (
+                f"{go2rtc_url.rstrip('/')}/api/streams"
+                f"?name={stream_name}&src={urllib.parse.quote(src)}"
+            )
 
             session = async_get_clientsession(self.hass)
-            async with session.put(put_api, timeout=aiohttp.ClientTimeout(total=4.0)) as resp:
+            async with session.put(
+                put_api, timeout=aiohttp.ClientTimeout(total=4.0)
+            ) as resp:
                 if resp.status in (200, 201):
-                    go2rtc_rtsp = f"rtsp://{go2rtc_host}:8554/{stream_name}"
+                    go2rtc_rtsp = (
+                        f"rtsp://{go2rtc_host}:{DEFAULT_GO2RTC_RTSP_PORT}/{stream_name}"
+                    )
                     _LOGGER.info(
                         "Registered go2rtc dynamic playback stream for channel %s: %s -> %s",
                         channel,
@@ -176,7 +210,10 @@ class IntelbrasMediaSource(MediaSource):
                     return go2rtc_rtsp, stream_name
                 _LOGGER.debug("go2rtc PUT failed with HTTP %s", resp.status)
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("go2rtc playback registration failed, falling back to DVR RTSP: %s", exc)
+            _LOGGER.debug(
+                "go2rtc playback registration failed, falling back to DVR RTSP: %s",
+                exc,
+            )
 
         return dvr_playback_url, None
 
@@ -191,12 +228,17 @@ class IntelbrasMediaSource(MediaSource):
         try:
             del_api = f"{go2rtc_url.rstrip('/')}/api/streams?name={stream_name}"
             session = async_get_clientsession(self.hass)
-            async with session.delete(del_api, timeout=aiohttp.ClientTimeout(total=2.0)):
+            async with session.delete(
+                del_api, timeout=aiohttp.ClientTimeout(total=2.0)
+            ):
                 _LOGGER.debug("Cleaned up go2rtc playback stream: %s", stream_name)
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("Error cleaning up go2rtc stream %s: %s", stream_name, exc)
+            _LOGGER.debug(
+                "Error cleaning up go2rtc stream %s: %s", stream_name, exc
+            )
 
     async def async_resolve_media(self, item: MediaSourceItem) -> PlayMedia:
+        """Resolve a recording item into an HLS PlayMedia stream."""
         parts = (item.identifier or "").split("|")
         if len(parts) != 5 or parts[0] != "PLAY":
             raise Unresolvable(f"Invalid identifier: {item.identifier}")
@@ -211,7 +253,6 @@ class IntelbrasMediaSource(MediaSource):
         ch_idx = int(channel)
         ch1 = ch_idx + 1
 
-        # Immediately assert playback priority to kill running thumbnail procs and block new ones
         set_playback_active(self.hass, duration=45.0)
 
         domain_data = self.hass.data.setdefault(DOMAIN, {})
@@ -227,10 +268,16 @@ class IntelbrasMediaSource(MediaSource):
             await self._cleanup_go2rtc_playback(old_g2r)
             domain_data["active_playback_g2r"] = None
 
-        rtsp_port = entry.options.get(CONF_RTSP_PORT, entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT))
-        raw_dvr_url = client.playback_rtsp_url(ch1, start, end, rtsp_port=rtsp_port)
+        rtsp_port = entry.options.get(
+            CONF_RTSP_PORT, entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT)
+        )
+        raw_dvr_url = client.playback_rtsp_url(
+            ch1, start, end, rtsp_port=rtsp_port
+        )
 
-        url, go2rtc_stream_name = await self._prepare_playback_url(entry_id, client, ch1, raw_dvr_url)
+        url, go2rtc_stream_name = await self._prepare_playback_url(
+            entry_id, client, ch1, raw_dvr_url
+        )
 
         _LOGGER.info(
             "Starting Intelbras DVR playback stream for channel %s (%s to %s) via %s",
@@ -262,7 +309,10 @@ class IntelbrasMediaSource(MediaSource):
 
     # ---------- Navigation ----------
 
-    async def async_browse_media(self, item: MediaSourceItem) -> BrowseMediaSource:
+    async def async_browse_media(
+        self, item: MediaSourceItem
+    ) -> BrowseMediaSource:
+        """Browse DVR recordings hierarchy."""
         identifier = item.identifier or ""
         set_browse_scope(self.hass, identifier)
 
@@ -325,7 +375,7 @@ class IntelbrasMediaSource(MediaSource):
 
     def _browse_channels(self, identifier: str) -> BrowseMediaSource:
         _, entry_id = identifier.split("|")
-        entry, _ = self._client(entry_id)
+        entry, client = self._client(entry_id)
         channel_names = self._channel_names(entry)
         configured_channels = entry.data.get(CONF_CHANNELS, [])
 
@@ -344,11 +394,14 @@ class IntelbrasMediaSource(MediaSource):
             return True
 
         all_channels = [
-            ch for ch in sorted(set(channel_names.keys()) | set(configured_channels))
+            ch
+            for ch in sorted(set(channel_names.keys()) | set(configured_channels))
             if _is_channel_active(ch, channel_names.get(ch, ""))
         ]
         if not all_channels:
-            all_channels = list(range(entry.data.get("channel_count", 8)))
+            all_channels = list(configured_channels) or list(
+                range(client.total_channels or 4)
+            )
 
         return BrowseMediaSource(
             domain=DOMAIN,
@@ -384,7 +437,7 @@ class IntelbrasMediaSource(MediaSource):
         ch_thumb = self._channel_thumbnail(entry, ch_idx)
 
         today = dt_util.now().date()
-        days_count = 10
+        days_count = MEDIA_BROWSE_DAYS
 
         cache_key = (entry_id, ch_idx)
         now_ts = time_mod.monotonic()
@@ -402,9 +455,14 @@ class IntelbrasMediaSource(MediaSource):
                     timeout=6.0,
                 )
                 if earliest_date:
-                    self._earliest_date_cache[cache_key] = (now_ts, earliest_date)
+                    self._earliest_date_cache[cache_key] = (
+                        now_ts,
+                        earliest_date,
+                    )
             except Exception as exc:  # noqa: BLE001
-                _LOGGER.debug("Earliest date lookup failed for ch %d: %s", ch_idx, exc)
+                _LOGGER.debug(
+                    "Earliest date lookup failed for ch %d: %s", ch_idx, exc
+                )
 
         if not earliest_date and getattr(client, "_dvr_earliest_date", None):
             earliest_date = client._dvr_earliest_date
@@ -455,6 +513,7 @@ class IntelbrasMediaSource(MediaSource):
     async def _browse_hours(self, identifier: str) -> BrowseMediaSource:
         """One day: folders per hour, only for hours containing recordings."""
         _, entry_id, channel, day_s = identifier.split("|")
+        entry, _ = self._client(entry_id)
         day, recordings = await self._day_recordings(entry_id, channel, day_s)
         ch_idx = int(channel)
 
@@ -482,11 +541,15 @@ class IntelbrasMediaSource(MediaSource):
             end_c = (actual_first_start + step).strftime(_COMPACT_FMT)
             all_day_thumb = f"/api/intelbras_dvr/recording_thumb/{entry_id}/{channel}/{start_c}/{end_c}?v=3"
             items_to_cache.append((entry_id, ch_idx, start_c, end_c))
-            all_day_title = (
-                f"📅 {day.strftime('%d/%m/%Y')} – Ver Tudo (Linha do Tempo)"
+            default_all_tpl = (
+                "📅 {date} – Ver Tudo (Linha do Tempo)"
                 if self._is_pt()
-                else f"📅 {day.strftime('%d/%m/%Y')} – View All (Timeline)"
+                else "📅 {date} – View All (Timeline)"
             )
+            all_day_tpl = self._translate(
+                entry, "view_all_timeline", default_all_tpl
+            )
+            all_day_title = all_day_tpl.format(date=day.strftime("%d/%m/%Y"))
             children.append(
                 BrowseMediaSource(
                     domain=DOMAIN,
@@ -508,9 +571,15 @@ class IntelbrasMediaSource(MediaSource):
             slot = hour_start
             while slot < hour_end:
                 slot_end = slot + step
-                matching_recs = [rec for rec in recordings if rec.start < slot_end and rec.end > slot]
+                matching_recs = [
+                    rec
+                    for rec in recordings
+                    if rec.start < slot_end and rec.end > slot
+                ]
                 if matching_recs:
-                    actual_start = max(slot, min(rec.start for rec in matching_recs))
+                    actual_start = max(
+                        slot, min(rec.start for rec in matching_recs)
+                    )
                     st_c = actual_start.strftime(_COMPACT_FMT)
                     et_c = slot_end.strftime(_COMPACT_FMT)
                     hour_thumb = f"/api/intelbras_dvr/recording_thumb/{entry_id}/{channel}/{st_c}/{et_c}?v=3"
@@ -565,13 +634,21 @@ class IntelbrasMediaSource(MediaSource):
         slot = hour_start
         while slot < hour_end:
             slot_end = slot + step
-            matching_recs = [rec for rec in recordings if rec.start < slot_end and rec.end > slot]
+            matching_recs = [
+                rec
+                for rec in recordings
+                if rec.start < slot_end and rec.end > slot
+            ]
             if matching_recs:
-                actual_start = max(slot, min(rec.start for rec in matching_recs))
+                actual_start = max(
+                    slot, min(rec.start for rec in matching_recs)
+                )
                 start_compact = actual_start.strftime(_COMPACT_FMT)
                 end_compact = slot_end.strftime(_COMPACT_FMT)
                 thumb_url = f"/api/intelbras_dvr/recording_thumb/{entry_id}/{channel}/{start_compact}/{end_compact}?v=3"
-                items_to_cache.append((entry_id, ch_idx, start_compact, end_compact))
+                items_to_cache.append(
+                    (entry_id, ch_idx, start_compact, end_compact)
+                )
                 children.append(
                     BrowseMediaSource(
                         domain=DOMAIN,
@@ -605,7 +682,9 @@ class IntelbrasMediaSource(MediaSource):
             children=children,
         )
 
-    async def _browse_all_day_slices(self, identifier: str) -> BrowseMediaSource:
+    async def _browse_all_day_slices(
+        self, identifier: str
+    ) -> BrowseMediaSource:
         """One full day: flat list of all slices for timeline ribbon and gallery."""
         _, entry_id, channel, day_s = identifier.split("|")
         day, recordings = await self._day_recordings(entry_id, channel, day_s)
@@ -622,13 +701,21 @@ class IntelbrasMediaSource(MediaSource):
         slot = day_start
         while slot < day_end:
             slot_end = slot + step
-            matching_recs = [rec for rec in recordings if rec.start < slot_end and rec.end > slot]
+            matching_recs = [
+                rec
+                for rec in recordings
+                if rec.start < slot_end and rec.end > slot
+            ]
             if matching_recs:
-                actual_start = max(slot, min(rec.start for rec in matching_recs))
+                actual_start = max(
+                    slot, min(rec.start for rec in matching_recs)
+                )
                 start_compact = actual_start.strftime(_COMPACT_FMT)
                 end_compact = slot_end.strftime(_COMPACT_FMT)
                 thumb_url = f"/api/intelbras_dvr/recording_thumb/{entry_id}/{channel}/{start_compact}/{end_compact}?v=3"
-                items_to_cache.append((entry_id, ch_idx, start_compact, end_compact))
+                items_to_cache.append(
+                    (entry_id, ch_idx, start_compact, end_compact)
+                )
                 children.append(
                     BrowseMediaSource(
                         domain=DOMAIN,
@@ -650,7 +737,8 @@ class IntelbrasMediaSource(MediaSource):
         if items_to_cache:
             start_scope_cache(self.hass, identifier, items_to_cache)
 
-        timeline_label = "Linha do Tempo" if self._is_pt() else "Timeline"
+        default_tl = "Linha do Tempo" if self._is_pt() else "Timeline"
+        timeline_label = self._translate(entry, "timeline", default_tl)
         return BrowseMediaSource(
             domain=DOMAIN,
             identifier=identifier,

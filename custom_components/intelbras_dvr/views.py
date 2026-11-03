@@ -10,7 +10,6 @@ import shutil
 import time as time_mod
 from typing import Any
 import unicodedata
-import urllib.parse
 
 from aiohttp import web
 
@@ -59,11 +58,13 @@ def abort_running_thumbnail_processes(hass: HomeAssistant) -> None:
     for p in procs:
         try:
             p.kill()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
 
-def is_recording_thumb_in_scope(hass: HomeAssistant, entry_id: str, channel: int, start_s: str) -> bool:
+def is_recording_thumb_in_scope(
+    hass: HomeAssistant, entry_id: str, channel: int, start_s: str
+) -> bool:
     """Check if the requested recording thumbnail belongs to the user's current browsing scope."""
     data = hass.data.get(DOMAIN, {})
     scope = data.get(DATA_BROWSE_SCOPE, "")
@@ -96,7 +97,9 @@ def is_recording_thumb_in_scope(hass: HomeAssistant, entry_id: str, channel: int
     return True
 
 
-def is_day_thumb_in_scope(hass: HomeAssistant, entry_id: str, channel: int, day_s: str) -> bool:
+def is_day_thumb_in_scope(
+    hass: HomeAssistant, entry_id: str, channel: int, day_s: str
+) -> bool:
     """Check if the requested day thumbnail belongs to the user's current browsing scope."""
     data = hass.data.get(DOMAIN, {})
     scope = data.get(DATA_BROWSE_SCOPE, "")
@@ -112,7 +115,7 @@ def is_day_thumb_in_scope(hass: HomeAssistant, entry_id: str, channel: int, day_
         data[DATA_BROWSE_LAST_ACTIVE] = time_mod.monotonic()
         return True
     if kind in ("FILES", "ALLFILES") and len(parts) >= 4:
-        in_scope = (parts[3] == day_s)
+        in_scope = parts[3] == day_s
         if in_scope:
             data[DATA_BROWSE_LAST_ACTIVE] = time_mod.monotonic()
         return in_scope
@@ -133,10 +136,12 @@ def is_playback_active(hass: HomeAssistant) -> bool:
         try:
             hls = stream.get_provider("hls")
             if hls is not None:
-                last_acc = getattr(hls, "last_accessed", None) or getattr(hls, "_last_accessed", None)
+                last_acc = getattr(hls, "last_accessed", None) or getattr(
+                    hls, "_last_accessed", None
+                )
                 if last_acc and (time_mod.time() - last_acc < 15.0):
                     return True
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
     return False
@@ -171,7 +176,7 @@ def _read_disk_cache(file_path: str) -> bytes | None:
         if os.path.isfile(file_path):
             with open(file_path, "rb") as f:
                 return f.read()
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     return None
 
@@ -194,6 +199,7 @@ class IntelbrasThumbnailView(HomeAssistantView):
     requires_auth = False
 
     def __init__(self, hass: HomeAssistant) -> None:
+        """Initialise the live thumbnail view."""
         self.hass = hass
         self._cache: dict[tuple[str, int], dict[str, Any]] = {}
         self._sem = asyncio.Semaphore(2)
@@ -201,14 +207,10 @@ class IntelbrasThumbnailView(HomeAssistantView):
     async def get(
         self, request: web.Request, entry_id: str, channel: str
     ) -> web.StreamResponse:
+        """Handle GET request for live camera thumbnail."""
         return await async_handle_thumbnail(
             self.hass, entry_id, channel, self._cache, self._sem
         )
-
-    async def _async_fetch_from_ha_camera(
-        self, entry: Any, ch_idx: int
-    ) -> bytes | None:
-        return await async_fetch_from_ha_camera(self.hass, entry, ch_idx)
 
 
 class IntelbrasRecordingThumbnailView(HomeAssistantView):
@@ -219,6 +221,7 @@ class IntelbrasRecordingThumbnailView(HomeAssistantView):
     requires_auth = False
 
     def __init__(self, hass: HomeAssistant) -> None:
+        """Initialise the recording thumbnail view."""
         self.hass = hass
         self._cache: dict[tuple[str, int, str], bytes] = {}
         self._sem = asyncio.Semaphore(1)
@@ -237,9 +240,9 @@ class IntelbrasRecordingThumbnailView(HomeAssistantView):
                         if fname.endswith(".jpg"):
                             try:
                                 os.remove(os.path.join(self.cache_dir, fname))
-                            except Exception:
+                            except Exception:  # noqa: BLE001
                                 pass
-                    with open(v_file, "w") as f:
+                    with open(v_file, "w", encoding="utf-8") as f:
                         f.write("v2")
                     _LOGGER.info("Purged contaminated recording thumbnails cache")
                 else:
@@ -250,7 +253,7 @@ class IntelbrasRecordingThumbnailView(HomeAssistantView):
                             try:
                                 if os.path.getmtime(fpath) < cutoff:
                                     os.remove(fpath)
-                            except Exception:
+                            except Exception:  # noqa: BLE001
                                 pass
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.debug("Could not maintain thumbnails disk cache: %s", exc)
@@ -258,8 +261,14 @@ class IntelbrasRecordingThumbnailView(HomeAssistantView):
         self.hass.async_add_executor_job(_sync_purge)
 
     async def get(
-        self, request: web.Request, entry_id: str, channel: str, start: str, end: str
+        self,
+        request: web.Request,
+        entry_id: str,
+        channel: str,
+        start: str,
+        end: str,
     ) -> web.StreamResponse:
+        """Handle GET request for recording slice thumbnail."""
         return await async_handle_recording_thumbnail(
             self.hass,
             entry_id,
@@ -281,6 +290,7 @@ class IntelbrasDayThumbnailView(HomeAssistantView):
     requires_auth = False
 
     def __init__(self, hass: HomeAssistant) -> None:
+        """Initialise the day thumbnail view."""
         self.hass = hass
         self._cache: dict[tuple[str, int, str], bytes] = {}
         self.cache_dir = hass.config.path(".storage", "intelbras_dvr_thumbnails")
@@ -288,6 +298,7 @@ class IntelbrasDayThumbnailView(HomeAssistantView):
     async def get(
         self, request: web.Request, entry_id: str, channel: str, day_s: str
     ) -> web.StreamResponse:
+        """Handle GET request for day preview thumbnail."""
         return await async_handle_day_thumbnail(
             self.hass,
             entry_id,
@@ -299,71 +310,79 @@ class IntelbrasDayThumbnailView(HomeAssistantView):
         )
 
 
+class IntelbrasBrandIconView(HomeAssistantView):
+    """View to serve local brand icons without auth for HACS and UI consumers."""
+
+    url = "/api/intelbras_dvr/brand/{image}"
+    name = "api:intelbras_dvr:brand"
+    requires_auth = False
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        """Initialise the brand icon view."""
+        self.hass = hass
+        self._brand_dir = os.path.join(os.path.dirname(__file__), "brand")
+        self._root_dir = os.path.dirname(__file__)
+
+    async def get(self, request: web.Request, image: str) -> web.StreamResponse:
+        """Serve the requested brand image."""
+        allowed = {
+            "icon.png",
+            "icon@2x.png",
+            "dark_icon.png",
+            "dark_icon@2x.png",
+            "logo.png",
+            "logo@2x.png",
+            "dark_logo.png",
+            "dark_logo@2x.png",
+        }
+        if image not in allowed:
+            return web.Response(status=HTTPStatus.NOT_FOUND, text="Not found")
+
+        file_path = os.path.join(self._brand_dir, image)
+        if not os.path.isfile(file_path) and image.startswith("dark_"):
+            file_path = os.path.join(self._brand_dir, image.removeprefix("dark_"))
+        if not os.path.isfile(file_path):
+            file_path = os.path.join(self._root_dir, image.removeprefix("dark_"))
+        data = await self.hass.async_add_executor_job(_read_disk_cache, file_path)
+        if not data:
+            return web.Response(status=HTTPStatus.NOT_FOUND, text="Not found")
+
+        return web.Response(
+            body=data,
+            content_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
+
 def register_or_update_views(hass: HomeAssistant) -> None:
-    """Register or hot-reload all Intelbras DVR HTTP views, even if aiohttp router is frozen."""
-    view_specs: list[tuple[str, type[HomeAssistantView], str]] = [
-        ("intelbras_dvr_thumbnail_view", IntelbrasThumbnailView, "/api/intelbras_dvr/thumbnail/"),
-        ("intelbras_dvr_recording_thumbnail_view", IntelbrasRecordingThumbnailView, "/api/intelbras_dvr/recording_thumb/"),
-        ("intelbras_dvr_day_thumbnail_view", IntelbrasDayThumbnailView, "/api/intelbras_dvr/day_thumb/"),
+    """Register Intelbras DVR HTTP views once per Home Assistant runtime."""
+    view_specs: list[tuple[str, type[HomeAssistantView]]] = [
+        ("intelbras_dvr_thumbnail_view", IntelbrasThumbnailView),
+        ("intelbras_dvr_recording_thumbnail_view", IntelbrasRecordingThumbnailView),
+        ("intelbras_dvr_day_thumbnail_view", IntelbrasDayThumbnailView),
+        ("intelbras_dvr_brand_icon_view", IntelbrasBrandIconView),
     ]
 
-    app = getattr(hass.http, "app", None)
-    router = getattr(app, "router", None) if app is not None else None
+    if getattr(hass, "http", None) is None:
+        return
 
-    for data_key, view_cls, url_prefix in view_specs:
-        existing = hass.data.get(data_key)
-        if existing is None:
+    for data_key, view_cls in view_specs:
+        if data_key not in hass.data:
             instance = view_cls(hass)
             hass.data[data_key] = instance
-        else:
-            existing.__class__ = view_cls
-            existing.hass = hass
-            if data_key == "intelbras_dvr_thumbnail_view":
-                if not hasattr(existing, "_sem"):
-                    existing._sem = asyncio.Semaphore(2)
-                if not hasattr(existing, "_cache"):
-                    existing._cache = {}
-            elif data_key == "intelbras_dvr_recording_thumbnail_view":
-                if not hasattr(existing, "_sem"):
-                    existing._sem = asyncio.Semaphore(1)
-                if not hasattr(existing, "_cache"):
-                    existing._cache = {}
-                if not hasattr(existing, "cache_dir"):
-                    existing.cache_dir = hass.config.path(".storage", "intelbras_dvr_thumbnails")
-            elif data_key == "intelbras_dvr_day_thumbnail_view":
-                if not hasattr(existing, "_cache"):
-                    existing._cache = {}
-                if not hasattr(existing, "cache_dir"):
-                    existing.cache_dir = hass.config.path(".storage", "intelbras_dvr_thumbnails")
-            instance = existing
-
-        route_found = False
-        if router is not None:
-            for route in list(router.routes()):
-                res_str = str(getattr(route, "resource", ""))
-                if url_prefix in res_str:
-                    route_found = True
-
-                    def _make_handler(view_inst: HomeAssistantView):
-                        async def _handler(request: web.Request) -> web.StreamResponse:
-                            return await view_inst.get(request, **request.match_info)
-                        return _handler
-
-                    route._handler = _make_handler(instance)
-
-        if not route_found and getattr(hass, "http", None) is not None:
-            was_frozen = False
-            if router is not None and getattr(router, "_frozen", False):
-                was_frozen = True
-                router._frozen = False
             try:
                 hass.http.register_view(instance)
-                _LOGGER.info("Registered HTTP view %s (%s)", view_cls.__name__, instance.url)
+                _LOGGER.debug(
+                    "Registered HTTP view %s (%s)",
+                    view_cls.__name__,
+                    instance.url,
+                )
             except Exception as exc:  # noqa: BLE001
-                _LOGGER.warning("Failed registering HTTP view %s: %s", view_cls.__name__, exc)
-            finally:
-                if router is not None and was_frozen:
-                    router._frozen = True
+                _LOGGER.warning(
+                    "Failed registering HTTP view %s: %s",
+                    view_cls.__name__,
+                    exc,
+                )
 
 
 async def async_handle_thumbnail(
@@ -422,18 +441,16 @@ async def async_handle_thumbnail(
         )
         configured_channels = entry.data.get(CONF_CHANNELS, [])
         if not clean_name or (
-            clean_name in (f"cam {ch_idx + 1}", f"channel {ch_idx + 1}", f"canal {ch_idx + 1}")
+            clean_name
+            in (f"cam {ch_idx + 1}", f"channel {ch_idx + 1}", f"canal {ch_idx + 1}")
             and ch_idx not in configured_channels
         ):
-            return web.Response(status=HTTPStatus.NOT_FOUND, text="Channel not configured")
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, text="Channel not configured"
+            )
 
         data: bytes | None = None
-
-        is_ip_channel = (
-            client.channel_is_ip(ch_idx)
-            if hasattr(client, "channel_is_ip")
-            else False
-        )
+        is_ip_channel = client.channel_is_ip(ch_idx)
 
         # 1. Analog BNC channels support direct fast snapshot.cgi from DVR
         if not is_ip_channel:
@@ -451,15 +468,15 @@ async def async_handle_thumbnail(
             rtsp_port = entry.options.get(
                 CONF_RTSP_PORT, entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT)
             )
-            ch1 = ch_idx + 1
-            host = entry.data["host"]
-            username = urllib.parse.quote(entry.data["username"], safe="")
-            password = urllib.parse.quote(entry.data["password"], safe="")
-            sub_url = f"rtsp://{username}:{password}@{host}:{rtsp_port}/cam/realmonitor?channel={ch1}&subtype={1}"
+            sub_url = client.get_rtsp_url(ch_idx, subtype=1, rtsp_port=rtsp_port)
             try:
                 data = await async_extract_stream_frame(hass, sub_url, timeout=3.5)
             except Exception as exc:  # noqa: BLE001
-                _LOGGER.debug("Sub-stream frame extraction failed for ch %d: %s", ch_idx, exc)
+                _LOGGER.debug(
+                    "Sub-stream frame extraction failed for ch %d: %s",
+                    ch_idx,
+                    exc,
+                )
 
         # 4. If still not found and is_ip_channel, try DVR snapshot as last resort
         if not data and is_ip_channel:
@@ -492,7 +509,7 @@ async def async_handle_thumbnail(
 async def async_extract_stream_frame(
     hass: HomeAssistant, stream_url: str, timeout: float = 5.0
 ) -> bytes | None:
-    """Extract a single frame from an RTSP stream (live or playback) using FFmpeg over TCP with downscaling."""
+    """Extract a single frame from an RTSP stream (live or playback) using FFmpeg over TCP."""
     ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
     cmd = [
         ffmpeg_bin,
@@ -548,7 +565,11 @@ async def async_extract_stream_frame(
             proc.communicate(), timeout=timeout
         )
         elapsed = time_mod.monotonic() - t0
-        err_msg = stderr_data.decode("utf-8", errors="ignore").strip() if stderr_data else ""
+        err_msg = (
+            stderr_data.decode("utf-8", errors="ignore").strip()
+            if stderr_data
+            else ""
+        )
         if (
             proc.returncode == 0
             and stdout_data
@@ -573,7 +594,11 @@ async def async_extract_stream_frame(
         )
     except TimeoutError:
         elapsed = time_mod.monotonic() - t0
-        _LOGGER.debug("[VIEWS] TIMEOUT: FFmpeg timed out after %.2fs for %s", elapsed, safe_url)
+        _LOGGER.debug(
+            "[VIEWS] TIMEOUT: FFmpeg timed out after %.2fs for %s",
+            elapsed,
+            safe_url,
+        )
         if proc:
             try:
                 proc.kill()
@@ -594,7 +619,7 @@ async def async_extract_stream_frame(
             if proc.returncode is None:
                 try:
                     proc.kill()
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
     return None
 
@@ -631,7 +656,10 @@ async def _scope_cache_loop(
                 mem_cache[cache_key] = disk_data
             continue
 
-        while is_playback_active(hass) or data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 0) > 0:
+        while (
+            is_playback_active(hass)
+            or data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 0) > 0
+        ):
             await asyncio.sleep(0.25)
             if data_dom.get(DATA_BROWSE_SCOPE, "") != scope_id:
                 return
@@ -654,34 +682,50 @@ async def _scope_cache_loop(
         except ValueError:
             continue
 
-        playback_url = client.playback_rtsp_url(ch1, start_dt, end_dt, rtsp_port=rtsp_port)
+        playback_url = client.playback_rtsp_url(
+            ch1, start_dt, end_dt, rtsp_port=rtsp_port
+        )
 
         try:
             async with sem:
                 if data_dom.get(DATA_BROWSE_SCOPE, "") != scope_id:
                     break
-                if is_playback_active(hass) or data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 0) > 0:
+                if (
+                    is_playback_active(hass)
+                    or data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 0) > 0
+                ):
                     continue
 
                 if mem_cache is not None and cache_key in mem_cache:
                     continue
 
-                disk_data = await hass.async_add_executor_job(_read_disk_cache, cache_file)
+                disk_data = await hass.async_add_executor_job(
+                    _read_disk_cache, cache_file
+                )
                 if disk_data:
                     if mem_cache is not None:
                         mem_cache[cache_key] = disk_data
                     continue
 
-                data = await _async_extract_recording_frame(hass, playback_url, timeout=6.0)
+                data = await _async_extract_recording_frame(
+                    hass, playback_url, timeout=6.0
+                )
                 await asyncio.sleep(0.15)
                 if data:
                     if mem_cache is not None:
                         mem_cache[cache_key] = data
-                    await hass.async_add_executor_job(_write_disk_cache, cache_file, data)
+                    await hass.async_add_executor_job(
+                        _write_disk_cache, cache_file, data
+                    )
         except (asyncio.CancelledError, GeneratorExit):
             break
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.debug("Scope cache worker error for ch %d [%s]: %s", ch_idx, start_s, exc)
+            _LOGGER.debug(
+                "Scope cache worker error for ch %d [%s]: %s",
+                ch_idx,
+                start_s,
+                exc,
+            )
 
 
 def start_scope_cache(
@@ -698,7 +742,11 @@ def start_scope_cache(
     view = hass.data.get("intelbras_dvr_recording_thumbnail_view")
     sem = getattr(view, "_sem", None) or asyncio.Semaphore(1)
     mem_cache = getattr(view, "_cache", None)
-    cache_dir = getattr(view, "cache_dir", hass.config.path(".storage", "intelbras_dvr_thumbnails"))
+    cache_dir = getattr(
+        view,
+        "cache_dir",
+        hass.config.path(".storage", "intelbras_dvr_thumbnails"),
+    )
 
     task = hass.async_create_background_task(
         _scope_cache_loop(hass, scope_id, items, cache_dir, sem, mem_cache),
@@ -784,9 +832,13 @@ async def async_handle_recording_thumbnail(
         CONF_RTSP_PORT, entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT)
     )
     ch1 = ch_idx + 1
-    playback_url = client.playback_rtsp_url(ch1, start_dt, end_dt, rtsp_port=rtsp_port)
+    playback_url = client.playback_rtsp_url(
+        ch1, start_dt, end_dt, rtsp_port=rtsp_port
+    )
 
-    data_dom[DATA_ACTIVE_HTTP_WAITERS] = data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 0) + 1
+    data_dom[DATA_ACTIVE_HTTP_WAITERS] = (
+        data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 0) + 1
+    )
     try:
         async with sem:
             if _is_client_disconnected(request):
@@ -796,21 +848,28 @@ async def async_handle_recording_thumbnail(
                     headers={"Cache-Control": "no-cache, no-store"},
                 )
 
-            if (
-                data_dom.get(DATA_BROWSE_GENERATION, 0) != arrival_gen
-                and not is_recording_thumb_in_scope(hass, entry_id, ch_idx, start_s)
+            if data_dom.get(
+                DATA_BROWSE_GENERATION, 0
+            ) != arrival_gen and not is_recording_thumb_in_scope(
+                hass, entry_id, ch_idx, start_s
             ):
                 return web.Response(
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
                     text="Scope navigated away",
-                    headers={"Retry-After": "10", "Cache-Control": "no-cache, no-store"},
+                    headers={
+                        "Retry-After": "10",
+                        "Cache-Control": "no-cache, no-store",
+                    },
                 )
 
             if is_playback_active(hass):
                 return web.Response(
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
                     text="Playback active",
-                    headers={"Retry-After": "5", "Cache-Control": "no-cache, no-store"},
+                    headers={
+                        "Retry-After": "5",
+                        "Cache-Control": "no-cache, no-store",
+                    },
                 )
 
             cached = cache.get(cache_key)
@@ -821,7 +880,9 @@ async def async_handle_recording_thumbnail(
                     headers={"Cache-Control": "public, max-age=86400"},
                 )
 
-            disk_data = await hass.async_add_executor_job(_read_disk_cache, cache_file)
+            disk_data = await hass.async_add_executor_job(
+                _read_disk_cache, cache_file
+            )
             if disk_data:
                 cache[cache_key] = disk_data
                 return web.Response(
@@ -830,13 +891,16 @@ async def async_handle_recording_thumbnail(
                     headers={"Cache-Control": "public, max-age=86400"},
                 )
 
-            data = await _async_extract_recording_frame(hass, playback_url, timeout=6.0)
-
+            data = await _async_extract_recording_frame(
+                hass, playback_url, timeout=6.0
+            )
             await asyncio.sleep(0.15)
 
             if data:
                 cache[cache_key] = data
-                await hass.async_add_executor_job(_write_disk_cache, cache_file, data)
+                await hass.async_add_executor_job(
+                    _write_disk_cache, cache_file, data
+                )
                 return web.Response(
                     body=data,
                     content_type="image/jpeg",
@@ -845,7 +909,9 @@ async def async_handle_recording_thumbnail(
     except (asyncio.CancelledError, ConnectionResetError):
         pass
     except Exception as exc:  # noqa: BLE001
-        _LOGGER.debug("Extraction failed for ch %d [%s]: %s", ch_idx, start_s, exc)
+        _LOGGER.debug(
+            "Extraction failed for ch %d [%s]: %s", ch_idx, start_s, exc
+        )
     finally:
         data_dom[DATA_ACTIVE_HTTP_WAITERS] = max(
             0, data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 1) - 1
@@ -915,7 +981,10 @@ async def async_handle_day_thumbnail(
         return web.Response(
             status=HTTPStatus.SERVICE_UNAVAILABLE,
             text="Playback active",
-            headers={"Retry-After": "10", "Cache-Control": "no-cache, no-store"},
+            headers={
+                "Retry-After": "10",
+                "Cache-Control": "no-cache, no-store",
+            },
         )
 
     data_dom = hass.data.setdefault(DOMAIN, {})
@@ -930,7 +999,9 @@ async def async_handle_day_thumbnail(
     rec_view = hass.data.get("intelbras_dvr_recording_thumbnail_view")
     sem = getattr(rec_view, "_sem", None) or asyncio.Semaphore(1)
 
-    data_dom[DATA_ACTIVE_HTTP_WAITERS] = data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 0) + 1
+    data_dom[DATA_ACTIVE_HTTP_WAITERS] = (
+        data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 0) + 1
+    )
     try:
         async with sem:
             if _is_client_disconnected(request):
@@ -947,7 +1018,10 @@ async def async_handle_day_thumbnail(
                 return web.Response(
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
                     text="Scope navigated away or playback active",
-                    headers={"Retry-After": "10", "Cache-Control": "no-cache, no-store"},
+                    headers={
+                        "Retry-After": "10",
+                        "Cache-Control": "no-cache, no-store",
+                    },
                 )
 
             cached = cache.get(cache_key)
@@ -958,7 +1032,9 @@ async def async_handle_day_thumbnail(
                     headers={"Cache-Control": "public, max-age=86400"},
                 )
 
-            disk_data = await hass.async_add_executor_job(_read_disk_cache, cache_file)
+            disk_data = await hass.async_add_executor_job(
+                _read_disk_cache, cache_file
+            )
             if disk_data:
                 cache[cache_key] = disk_data
                 return web.Response(
@@ -968,26 +1044,49 @@ async def async_handle_day_thumbnail(
                 )
 
             try:
-                recordings = await client.find_recordings(ch1, start_search, end_search)
+                recordings = await client.find_recordings(
+                    ch1, start_search, end_search
+                )
             except Exception as exc:  # noqa: BLE001
-                _LOGGER.debug("Day thumbnail search failed for ch %d on %s: %s", ch_idx, day_s, exc)
+                _LOGGER.debug(
+                    "Day thumbnail search failed for ch %d on %s: %s",
+                    ch_idx,
+                    day_s,
+                    exc,
+                )
                 recordings = []
 
             if recordings:
-                daytime_recs = [r for r in recordings if 10 <= r.start.hour <= 16]
-                rec = daytime_recs[len(daytime_recs) // 2] if daytime_recs else recordings[len(recordings) // 2]
+                daytime_recs = [
+                    r for r in recordings if 10 <= r.start.hour <= 16
+                ]
+                rec = (
+                    daytime_recs[len(daytime_recs) // 2]
+                    if daytime_recs
+                    else recordings[len(recordings) // 2]
+                )
 
                 rtsp_port = entry.options.get(
-                    CONF_RTSP_PORT, entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT)
+                    CONF_RTSP_PORT,
+                    entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
                 )
-                rec_end = max(rec.start + timedelta(seconds=30), min(rec.end, rec.start + timedelta(minutes=5)))
-                playback_url = client.playback_rtsp_url(ch1, rec.start, rec_end, rtsp_port=rtsp_port)
+                rec_end = max(
+                    rec.start + timedelta(seconds=30),
+                    min(rec.end, rec.start + timedelta(minutes=5)),
+                )
+                playback_url = client.playback_rtsp_url(
+                    ch1, rec.start, rec_end, rtsp_port=rtsp_port
+                )
 
-                data = await _async_extract_recording_frame(hass, playback_url, timeout=6.0)
+                data = await _async_extract_recording_frame(
+                    hass, playback_url, timeout=6.0
+                )
                 await asyncio.sleep(0.15)
                 if data:
                     cache[cache_key] = data
-                    await hass.async_add_executor_job(_write_disk_cache, cache_file, data)
+                    await hass.async_add_executor_job(
+                        _write_disk_cache, cache_file, data
+                    )
                     return web.Response(
                         body=data,
                         content_type="image/jpeg",
@@ -996,7 +1095,12 @@ async def async_handle_day_thumbnail(
     except (asyncio.CancelledError, ConnectionResetError):
         pass
     except Exception as exc:  # noqa: BLE001
-        _LOGGER.debug("Day thumbnail extraction error for ch %d on %s: %s", ch_idx, day_s, exc)
+        _LOGGER.debug(
+            "Day thumbnail extraction error for ch %d on %s: %s",
+            ch_idx,
+            day_s,
+            exc,
+        )
     finally:
         data_dom[DATA_ACTIVE_HTTP_WAITERS] = max(
             0, data_dom.get(DATA_ACTIVE_HTTP_WAITERS, 1) - 1
@@ -1026,7 +1130,13 @@ async def async_fetch_from_ha_camera(
             .lower()
             .strip()
         )
-        if clean in (f"cam {ch_idx + 1}", f"channel {ch_idx + 1}", f"canal {ch_idx + 1}", f"cam{ch_idx + 1}", f"channel{ch_idx + 1}"):
+        if clean in (
+            f"cam {ch_idx + 1}",
+            f"channel {ch_idx + 1}",
+            f"canal {ch_idx + 1}",
+            f"cam{ch_idx + 1}",
+            f"channel{ch_idx + 1}",
+        ):
             return None
 
         from homeassistant.components.camera import async_get_image
@@ -1037,7 +1147,15 @@ async def async_fetch_from_ha_camera(
             if "frigate" not in s.entity_id and "preview" not in s.entity_id
         ]
 
-        stopwords = {"cam", "camera", "ch", "channel", "canal", "dvr", "intelbras"}
+        stopwords = {
+            "cam",
+            "camera",
+            "ch",
+            "channel",
+            "canal",
+            "dvr",
+            "intelbras",
+        }
         raw_words = clean.replace("-", " ").replace("_", " ").split()
         words = [w for w in raw_words if w not in stopwords and len(w) >= 3]
 

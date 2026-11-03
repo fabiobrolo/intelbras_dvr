@@ -6,6 +6,7 @@ from enum import StrEnum
 from homeassistant.const import Platform
 
 DOMAIN = "intelbras_dvr"
+INTEGRATION_VERSION = "0.4.0"
 
 # ---------------------------------------------------------------------------
 # Configuration keys
@@ -27,8 +28,19 @@ DEFAULT_RTSP_PORT = 554
 DEFAULT_SNAPSHOT_INTERVAL = 1.0  # seconds between camera snapshot refreshes
 DEFAULT_SCAN_INTERVAL = 60       # seconds — regular polling (slow poll)
 FIRMWARE_CHECK_INTERVAL = 21600  # seconds — 6 hours
+DEFAULT_GO2RTC_RTSP_PORT = 8554
 
-# Back-off after a 401 Unauthorized to prevent DVR IP ban
+# Picture setting defaults & ranges
+DEFAULT_BRIGHTNESS = 50
+DEFAULT_CONTRAST = 50
+DEFAULT_HUE = 50
+DEFAULT_SATURATION_ANALOG = 50
+DEFAULT_SATURATION_ACUTANCE = 80
+DEFAULT_ACUTANCE = 1
+MAX_COLOR_VALUE = 100
+MAX_ACUTANCE = 15
+
+# Back-off after a 401/403 Unauthorized to prevent DVR IP ban
 LOGIN_LOCKOUT_BACKOFF = 10.0  # seconds
 
 # PTZ momentary button move duration (seconds)
@@ -40,11 +52,13 @@ RECORD_MODE_MANUAL = 1    # continuous / always on
 RECORD_MODE_OFF = 2       # off / stopped
 
 # ---------------------------------------------------------------------------
-# CGI endpoint paths
+# CGI endpoint paths (HTTP API V3.35_Intelbras)
 # ---------------------------------------------------------------------------
 
 CONFIG_MANAGER_CGI = "/cgi-bin/configManager.cgi"
 SPLIT_CGI = "/cgi-bin/split.cgi"
+ENCODE_CGI = "/cgi-bin/encode.cgi"
+DEV_VIDEO_INPUT_CGI = "/cgi-bin/devVideoInput.cgi"
 MAGICBOX_CGI = "/cgi-bin/magicBox.cgi"
 SNAPSHOT_CGI = "/cgi-bin/snapshot.cgi"
 MEDIAFILEFIND_CGI = "/cgi-bin/mediaFileFind.cgi"
@@ -52,11 +66,14 @@ EVENT_MANAGER_CGI = "/cgi-bin/eventManager.cgi"
 STORAGE_CGI = "/cgi-bin/storageDevice.cgi"
 PTZ_CGI = "/cgi-bin/ptz.cgi"
 UPGRADE_CGI = "/cgi-bin/upgrade.cgi"
+UPGRADER_CGI = "/cgi-bin/upgrader.cgi"
+CLOUD_UPGRADER_CHECK_API = "/cgi-bin/api/CloudUpgrader/check"
+CLOUD_UPGRADER_EXEC_API = "/cgi-bin/api/CloudUpgrader/execute"
 RTSP_LIVE_PATH = "/cam/realmonitor?channel={channel}&subtype={subtype}"
 RTSP_PLAYBACK_PATH = "/cam/playback?channel={channel}&starttime={start}&endtime={end}"
 
 # Media browser recordings
-MEDIA_BROWSE_DAYS = 7  # Days listed per channel
+MEDIA_BROWSE_DAYS = 10  # Fallback days listed per channel when earliest date cannot be queried
 MEDIA_SLICE_MINUTES = 5  # Time slice granularity in minutes within an hour
 HLS_MIME = "application/x-mpegURL"
 
@@ -114,4 +131,3 @@ PLATFORMS: list[Platform] = [
     Platform.SWITCH,
     Platform.UPDATE,
 ]
-

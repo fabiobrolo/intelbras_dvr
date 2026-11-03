@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from dataclasses import dataclass
+import logging
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
-from homeassistant.components.select import SelectEntity
+from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.config_entries import ConfigEntry
 
 from .const import PTZ_MOVE_DURATION
@@ -16,16 +16,11 @@ from .entity import CameraChannelEntity
 _LOGGER = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# PTZ direction button descriptors
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, kw_only=True)
 class PTZButtonDescription(ButtonEntityDescription):
     """Extend ButtonEntityDescription with the PTZ direction code."""
 
-    ptz_code: str  # CGI code sent to ptz.cgi
+    ptz_code: str
 
 
 PTZ_BUTTON_DESCRIPTIONS: tuple[PTZButtonDescription, ...] = (
@@ -67,15 +62,15 @@ PTZ_BUTTON_DESCRIPTIONS: tuple[PTZButtonDescription, ...] = (
     ),
 )
 
-
-# ---------------------------------------------------------------------------
-# PTZ direction button
-# ---------------------------------------------------------------------------
+PTZ_PRESET_DESCRIPTION = SelectEntityDescription(
+    key="ptz_preset",
+    translation_key="ptz_preset",
+    icon="mdi:map-marker",
+)
 
 
 class PTZDirectionButton(CameraChannelEntity, ButtonEntity):
-    """
-    Momentary PTZ movement button.
+    """Momentary PTZ movement button.
 
     Pressing the button starts the PTZ movement and automatically stops it
     after PTZ_MOVE_DURATION seconds. Rapid repeated presses cancel the
@@ -122,21 +117,13 @@ class PTZDirectionButton(CameraChannelEntity, ButtonEntity):
             self._stop_task = asyncio.create_task(_delayed_stop())
 
 
-# ---------------------------------------------------------------------------
-# PTZ preset selector
-# ---------------------------------------------------------------------------
-
-
 class PTZPresetSelect(CameraChannelEntity, SelectEntity):
-    """
-    Select entity that lists saved PTZ presets for a channel.
+    """Select entity that lists saved PTZ presets for a channel.
 
     Changing the selection instantly moves the camera to the chosen preset.
-    Presets are read from the coordinator data (refreshed every poll cycle).
     """
 
-    _attr_translation_key = "ptz_preset"
-    _attr_icon = "mdi:map-marker"
+    entity_description: SelectEntityDescription = PTZ_PRESET_DESCRIPTION
 
     def __init__(
         self,
@@ -180,13 +167,14 @@ class PTZPresetSelect(CameraChannelEntity, SelectEntity):
         presets = self._presets
         if not presets:
             return
-        # Parse index from "<index>: <name>"
         try:
             preset_index = int(option.split(":", 1)[0].strip())
         except (ValueError, IndexError):
             _LOGGER.warning("Cannot parse PTZ preset option: %s", option)
             return
-        ok = await self.coordinator.client.ptz_goto_preset(self._channel, preset_index)
+        ok = await self.coordinator.client.ptz_goto_preset(
+            self._channel, preset_index
+        )
         if ok:
             self._current_option = option
             self.async_write_ha_state()
@@ -196,4 +184,3 @@ class PTZPresetSelect(CameraChannelEntity, SelectEntity):
                 self._channel,
                 preset_index,
             )
-

@@ -2,19 +2,20 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+if TYPE_CHECKING:
+    from . import IntelbrasDVRConfigEntry
 from .const import (
     CONF_CHANNELS,
     CONF_FEATURES,
     CONF_PTZ_CHANNELS,
-    DOMAIN,
+    DEFAULT_SATURATION_ANALOG,
     CameraFeature,
 )
 from .coordinator import IntelbrasCoordinator
@@ -24,10 +25,38 @@ from .ptz import PTZ_BUTTON_DESCRIPTIONS, PTZDirectionButton
 
 _LOGGER = logging.getLogger(__name__)
 
+DVR_REBOOT_DESCRIPTION = ButtonEntityDescription(
+    key="dvr_reboot",
+    translation_key="dvr_reboot",
+    icon="mdi:restart",
+    entity_category=EntityCategory.CONFIG,
+)
+
+DVR_REFRESH_DESCRIPTION = ButtonEntityDescription(
+    key="dvr_refresh",
+    translation_key="dvr_refresh",
+    icon="mdi:refresh",
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+CAMERA_REFRESH_DESCRIPTION = ButtonEntityDescription(
+    key="camera_refresh",
+    translation_key="camera_refresh",
+    icon="mdi:camera-refresh",
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+CAMERA_RESET_DEFAULTS_DESCRIPTION = ButtonEntityDescription(
+    key="camera_reset_defaults",
+    translation_key="camera_reset_defaults",
+    icon="mdi:image-filter-center-focus",
+    entity_category=EntityCategory.CONFIG,
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: IntelbrasDVRConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up DVR-level and per-camera button entities."""
@@ -39,7 +68,7 @@ async def async_setup_entry(
         int(k): v for k, v in entry.data.get("channel_names", {}).items()
     }
 
-    entities: list = [
+    entities: list[ButtonEntity] = [
         DVRRebootButton(coordinator, entry),
         DVRRefreshButton(coordinator, entry),
     ]
@@ -67,11 +96,11 @@ async def async_setup_entry(
 class DVRRebootButton(DVREntity, ButtonEntity):
     """Button that sends a reboot command to the DVR."""
 
-    _attr_translation_key = "dvr_reboot"
-    _attr_icon = "mdi:restart"
-    _attr_entity_category = EntityCategory.CONFIG
+    entity_description: ButtonEntityDescription = DVR_REBOOT_DESCRIPTION
 
-    def __init__(self, coordinator: IntelbrasCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
         """Initialise the reboot button."""
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_reboot"
@@ -88,11 +117,11 @@ class DVRRebootButton(DVREntity, ButtonEntity):
 class DVRRefreshButton(DVREntity, ButtonEntity):
     """Button that forces an immediate refresh of all DVR data."""
 
-    _attr_translation_key = "dvr_refresh"
-    _attr_icon = "mdi:refresh"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    entity_description: ButtonEntityDescription = DVR_REFRESH_DESCRIPTION
 
-    def __init__(self, coordinator: IntelbrasCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
         """Initialise the refresh button."""
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_refresh_all"
@@ -102,18 +131,15 @@ class DVRRefreshButton(DVREntity, ButtonEntity):
         await self.coordinator.async_request_refresh()
 
 
-
 class CameraRefreshButton(CameraChannelEntity, ButtonEntity):
     """Button that requests a data refresh reflecting the current DVR state for one camera."""
 
-    _attr_translation_key = "camera_refresh"
-    _attr_icon = "mdi:camera-refresh"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    entity_description: ButtonEntityDescription = CAMERA_REFRESH_DESCRIPTION
 
     def __init__(
         self,
         coordinator: IntelbrasCoordinator,
-        entry: ConfigEntry,
+        entry: IntelbrasDVRConfigEntry,
         channel: int,
         channel_name: str,
     ) -> None:
@@ -127,20 +153,14 @@ class CameraRefreshButton(CameraChannelEntity, ButtonEntity):
 
 
 class CameraResetDefaultsButton(CameraChannelEntity, ButtonEntity):
-    """
-    Button that resets the camera's picture settings to factory defaults.
+    """Button that resets the camera's picture settings to factory defaults."""
 
-    Defaults: Brightness=50, Contrast=50, Hue=50, Saturation=80, Acutance=1
-    """
-
-    _attr_translation_key = "camera_reset_defaults"
-    _attr_icon = "mdi:image-filter-center-focus"
-    _attr_entity_category = EntityCategory.CONFIG
+    entity_description: ButtonEntityDescription = CAMERA_RESET_DEFAULTS_DESCRIPTION
 
     def __init__(
         self,
         coordinator: IntelbrasCoordinator,
-        entry: ConfigEntry,
+        entry: IntelbrasDVRConfigEntry,
         channel: int,
         channel_name: str,
     ) -> None:
@@ -153,8 +173,7 @@ class CameraResetDefaultsButton(CameraChannelEntity, ButtonEntity):
         """Return True if coordinator is available and privacy mask is not active."""
         if not super().available:
             return False
-        colors: dict = (self.coordinator.data or {}).get("video_color", {})
-        color = colors.get(self._channel, {})
+        color = self._video_color
         if not color:
             return True
         return not (color.get("Brightness") == 0 and color.get("Saturation") == 0)
@@ -168,12 +187,18 @@ class CameraResetDefaultsButton(CameraChannelEntity, ButtonEntity):
             )
             return
 
-        supports_acutance = self.coordinator.client.channel_supports_acutance(self._channel)
+        supports_acutance = self.coordinator.client.channel_supports_acutance(
+            self._channel
+        )
         defaults = {
             "Brightness": DEFAULT_VIDEO_COLOR["Brightness"],
             "Contrast": DEFAULT_VIDEO_COLOR["Contrast"],
             "Hue": DEFAULT_VIDEO_COLOR["Hue"],
-            "Saturation": DEFAULT_VIDEO_COLOR["Saturation"] if supports_acutance else 50,
+            "Saturation": (
+                DEFAULT_VIDEO_COLOR["Saturation"]
+                if supports_acutance
+                else DEFAULT_SATURATION_ANALOG
+            ),
         }
         if supports_acutance:
             defaults["Acutance"] = DEFAULT_VIDEO_COLOR["Acutance"]
@@ -191,11 +216,8 @@ class CameraResetDefaultsButton(CameraChannelEntity, ButtonEntity):
             acutance=defaults.get("Acutance"),
             profile=None,
         )
-        if ok:
-            await self.coordinator.async_refresh_video_color()
-        else:
-            await self.coordinator.async_refresh_video_color()
+        await self.coordinator.async_refresh_video_color()
+        if not ok:
             _LOGGER.error(
                 "Failed to reset picture defaults on channel %d.", self._channel
             )
-

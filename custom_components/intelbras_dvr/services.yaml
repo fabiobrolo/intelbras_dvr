@@ -7,7 +7,8 @@ set_video_color:
       description: The config entry ID of the DVR (optional if only one DVR is configured).
       required: false
       selector:
-        text:
+        config_entry:
+          integration: intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -80,10 +81,11 @@ set_monitor_split:
       description: The config entry ID of the DVR (optional if only one DVR is configured).
       required: false
       selector:
-        text:
+        config_entry:
+          integration: intelbras_dvr
     mode:
       name: Split Mode
-      description: "Display mode: split1, split4, split8, split9, split16."
+      description: "Display mode: split1, split4, split8, split9, split16, split25, split36."
       required: true
       selector:
         select:
@@ -94,6 +96,8 @@ set_monitor_split:
             - split8
             - split9
             - split16
+            - split25
+            - split36
     group:
       name: Group
       description: Channel group page (0 for first group, 1 for second, etc.).
@@ -105,12 +109,13 @@ set_monitor_split:
           max: 10
     channel:
       name: Channel
-      description: Channel index for split1 mode.
+      description: Monitor output index (1 for primary monitor).
       required: false
+      default: 1
       selector:
         number:
-          min: 0
-          max: 31
+          min: 1
+          max: 4
 
 mask_camera:
   name: Mask Camera
@@ -121,7 +126,8 @@ mask_camera:
       description: The config entry ID of the DVR (optional if only one DVR is configured).
       required: false
       selector:
-        text:
+        config_entry:
+          integration: intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -150,7 +156,8 @@ reboot:
       description: The config entry ID of the DVR (optional if only one DVR is configured).
       required: false
       selector:
-        text:
+        config_entry:
+          integration: intelbras_dvr
 
 record_camera:
   name: Record Camera
@@ -161,7 +168,8 @@ record_camera:
       description: The config entry ID of the DVR (optional if only one DVR is configured).
       required: false
       selector:
-        text:
+        config_entry:
+          integration: intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -190,7 +198,8 @@ ptz_move:
       description: The config entry ID of the DVR (optional if only one DVR is configured).
       required: false
       selector:
-        text:
+        config_entry:
+          integration: intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -211,8 +220,16 @@ ptz_move:
             - down
             - left
             - right
+            - upper_left
+            - upper_right
+            - lower_left
+            - lower_right
             - zoom_in
             - zoom_out
+            - focus_near
+            - focus_far
+            - home
+            - auto_scan
     speed:
       name: Speed
       description: Movement speed (1 to 8).
@@ -243,7 +260,8 @@ ptz_stop:
       description: The config entry ID of the DVR (optional if only one DVR is configured).
       required: false
       selector:
-        text:
+        config_entry:
+          integration: intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -264,8 +282,16 @@ ptz_stop:
             - down
             - left
             - right
+            - upper_left
+            - upper_right
+            - lower_left
+            - lower_right
             - zoom_in
             - zoom_out
+            - focus_near
+            - focus_far
+            - home
+            - auto_scan
 
 ptz_preset:
   name: PTZ Preset
@@ -276,7 +302,8 @@ ptz_preset:
       description: The config entry ID of the DVR (optional if only one DVR is configured).
       required: false
       selector:
-        text:
+        config_entry:
+          integration: intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -293,4 +320,3 @@ ptz_preset:
         number:
           min: 1
           max: 255
-
