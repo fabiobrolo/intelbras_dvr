@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -20,7 +20,7 @@ Designed following modern Home Assistant Platinum-tier architectural standards (
 
 ---
 
-## 🚀 Recent Architectural Upgrades (v0.4.0)
+## 🚀 Recent Architectural Upgrades (v0.5.0)
 
 1. **Platinum-Tier Home Assistant Architecture:**
    * Strict PEP 695 typing (`type IntelbrasDVRConfigEntry = ConfigEntry[IntelbrasDVRData]`) and structured `DVRRuntimeState(TypedDict)` in `DataUpdateCoordinator`.
@@ -51,7 +51,6 @@ The table below lists verified hardware models, firmware versions, and their ope
 | Model / Firmware | Live RTSP (Main / Sub) | Snapshots (CGI / RTSP) | Recording Playback (HLS) | Dynamic AAC Audio (go2rtc) | Recording Thumbnails | Real-Time Push Events | Picture Controls | Privacy Mask | HDMI/VGA Split Monitor | PTZ Controls | Diagnostics & Reboot |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Intelbras iMHDX 3008**<br>`4.001.00IB001.0.T` | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported |
-| **Intelbras MHDX 1108**<br>`4.001.00IB000.1` | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported | ✅ Supported |
 
 ---
 
@@ -83,6 +82,24 @@ The table below lists verified hardware models, firmware versions, and their ope
 | `switch` | `privacy_mask` | `privacy` | Blanks out the camera video feed (`Brightness=0, Contrast=0, Saturation=0`) and restores previous values when turned off |
 | `button` | `ptz_up`, `ptz_down`, `ptz_left`, `ptz_right`, `ptz_zoom_in`, `ptz_zoom_out` | `ptz` | Directional and zoom PTZ controls with timed auto-stop (created only on channels with PTZ support) |
 | `select` | `ptz_preset` | `ptz` | Moves the PTZ camera to a discovered preset (created only on channels with configured PTZ presets) |
+
+---
+
+## 🔐 Prerequisites: Dedicated DVR User & Permissions (Recommended)
+
+Before adding the integration in Home Assistant, it is **strongly recommended** to create a dedicated user account specifically for Home Assistant on your Intelbras DVR (**System > Account > User** / *Sistema > Conta > Usuário*):
+
+1. **Why use a dedicated user?**
+   * Prevents session conflicts and temporary IP/account lockouts (`HTTP 401` lockouts) when personal accounts (`admin`) are accessed simultaneously from mobile apps (Intelbras iSIC / Guardian) or web browsers.
+   * Keeps DVR audit logs (`System > Log`) clean by separating automated Home Assistant actions from manual user operations.
+   * Enable the **Reusable** (*Reutilizável*) option on the user account if available on your firmware so multiple RTSP/HTTP connections can authenticate concurrently.
+
+2. **Required Permissions on the DVR:**
+   Assign the user to the **`admin`** group (or a custom group with all required privileges enabled) before configuring the integration:
+   * **Live View / Monitor (*Monitor / Visualização*)** & **Playback / Search (*Reprodução / Pesquisa*)**: Required for live RTSP streams, CGI snapshots, and Media Browser recording playback across all channels.
+   * **PTZ Control (*Controle PTZ*)**: Required to move PTZ cameras and trigger presets.
+   * **System / Encode / Camera / Record / Display Settings (*Sistema / Codificação / Câmera / Gravação / Tela*)**: Required to read channel names and capabilities, adjust picture settings (`Brightness`, `Contrast`, `Saturation`, `Hue`, `Acutance`) and privacy masks, change recording modes (`Schedule`, `Manual`, `Off`), and switch the physical HDMI/VGA monitor layout (`split1`, `split4`, `split8`, `split9`, `split16`).
+   * **System Info / Storage / Upgrade / Maintenance (*Info do Sistema / HD / Atualização / Manutenção*)**: Required for disk health sensors, firmware update checks, and the hardware reboot command.
 
 ---
 

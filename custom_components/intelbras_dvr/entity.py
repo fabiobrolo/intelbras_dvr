@@ -103,6 +103,16 @@ class DVREntity(CoordinatorEntity[IntelbrasCoordinator]):
         self._entry = entry
         self._attr_device_info = dvr_device_info(entry, coordinator)
 
+    @property
+    def available(self) -> bool:
+        """Return True when DVR data is loaded and consecutive failures are below threshold."""
+        if (
+            self.coordinator.data is not None
+            and self.coordinator._consecutive_failures < 3
+        ):
+            return True
+        return super().available
+
 
 class CameraChannelEntity(CoordinatorEntity[IntelbrasCoordinator]):
     """Base entity bound to a specific camera channel child device."""
@@ -127,6 +137,16 @@ class CameraChannelEntity(CoordinatorEntity[IntelbrasCoordinator]):
             channel=channel,
             channel_name=channel_name,
         )
+
+    @property
+    def available(self) -> bool:
+        """Return True when DVR data is loaded and consecutive failures are below threshold."""
+        if (
+            self.coordinator.data is not None
+            and self.coordinator._consecutive_failures < 3
+        ):
+            return True
+        return super().available
 
     @property
     def _video_color(self) -> dict[str, int]:

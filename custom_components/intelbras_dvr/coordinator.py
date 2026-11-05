@@ -100,6 +100,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             "release_notes": None,
         }
         self._refresh_video_color_task: asyncio.Task[None] | None = None
+        self._refresh_monitor_task: asyncio.Task[None] | None = None
 
     @property
     def selected_channels(self) -> list[int]:
@@ -232,7 +233,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
                 translation_key="auth_failed",
             ) from batch_config
 
-        if isinstance(batch_config, DVRConnectionError):
+        if isinstance(batch_config, Exception):
             self._consecutive_failures += 1
             if self._consecutive_failures >= 3:
                 raise UpdateFailed(
@@ -310,6 +311,25 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
                 self.async_update_listeners()
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("Failed to quick-refresh record modes: %s", exc)
+
+    async def async_refresh_monitor_mode(self) -> None:
+        """Quickly refresh only the physical monitor mode in the background (debounced)."""
+        if self._refresh_monitor_task and not self._refresh_monitor_task.done():
+            self._refresh_monitor_task.cancel()
+
+        async def _debounced_monitor_refresh() -> None:
+            try:
+                await asyncio.sleep(0.5)
+                mode_info = await self.client.get_monitor_mode(channel=1)
+                if mode_info and self.data is not None:
+                    self.data["monitor_mode"] = mode_info
+                    self.async_update_listeners()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("Failed to quick-refresh monitor mode: %s", exc)
+
+        self._refresh_monitor_task = asyncio.create_task(_debounced_monitor_refresh())
 
 
 # ---------------------------------------------------------------------------

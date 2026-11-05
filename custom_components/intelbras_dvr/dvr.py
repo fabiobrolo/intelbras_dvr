@@ -103,6 +103,7 @@ class IntelbrasClient:
         self._total_channels: int = 0
         self._monitor_caps: list[int] | None = None
         self._latest_fw_version: str | None = None
+        self._monitor_lock = asyncio.Lock()
 
     @property
     def total_channels(self) -> int:
@@ -406,12 +407,20 @@ class IntelbrasClient:
             )
             if resp.status_code == 200:
                 pat = re.compile(r"caps\.PreviewSplitNumList\[\d+\]=(\d+)")
+                enc_pat = re.compile(r"caps\.VideoEncodeDevices\[(\d+)\]\.")
+                max_enc_idx = -1
                 for line in resp.text.splitlines():
-                    m = pat.match(line.strip())
+                    s_line = line.strip()
+                    m = pat.match(s_line)
                     if m:
                         val = int(m.group(1))
                         if val > 0 and val not in split_nums:
                             split_nums.append(val)
+                    m_enc = enc_pat.match(s_line)
+                    if m_enc:
+                        max_enc_idx = max(max_enc_idx, int(m_enc.group(1)))
+                if max_enc_idx >= 0:
+                    self._total_channels = max(self._total_channels, max_enc_idx + 1)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("encode.cgi?action=getCaps not available: %s", exc)
 
@@ -770,17 +779,52 @@ class IntelbrasClient:
         return mode_info
 
     async def set_monitor_split(self, mode: str, group: int = 0, channel: int = 1) -> bool:
-        """Set display split mode on physical monitor output."""
-        resp = await self._get(
-            SPLIT_CGI,
-            params={
-                "action": "setMode",
-                "channel": channel,
-                "mode": mode,
-                "group": group,
-            },
-        )
-        return resp.status_code == 200 and "OK" in resp.text
+        """Set display split mode on physical monitor output with verification and retry."""
+        async with self._monitor_lock:
+            for attempt in range(1, 4):
+                try:
+                    resp = await self._get(
+                        SPLIT_CGI,
+                        params={
+                            "action": "setMode",
+                            "channel": channel,
+                            "mode": mode,
+                            "group": group,
+                        },
+                        timeout=6.0,
+                    )
+                    if resp.status_code == 200 and "OK" in resp.text:
+                        await asyncio.sleep(0.15)
+                        try:
+                            actual = await self.get_monitor_mode(channel=channel)
+                            actual_mode = str(actual.get("mode", "")).strip()
+                            actual_group = actual.get("group", 0)
+                            if not actual_mode or (
+                                actual_mode == mode
+                                and (mode != "split1" or actual_group == group)
+                            ):
+                                return True
+                            _LOGGER.warning(
+                                "Monitor split verification mismatch (attempt %d/3): requested %s:%d, DVR reported %s:%s",
+                                attempt,
+                                mode,
+                                group,
+                                actual_mode,
+                                actual_group,
+                            )
+                        except Exception:  # noqa: BLE001
+                            return True
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.warning(
+                        "Failed to set monitor split to %s:%d (attempt %d/3): %s",
+                        mode,
+                        group,
+                        attempt,
+                        exc,
+                    )
+                if attempt < 3:
+                    await asyncio.sleep(0.35 * attempt)
+            return False
 
     # ------------------------------------------------------------------
     # Privacy masking

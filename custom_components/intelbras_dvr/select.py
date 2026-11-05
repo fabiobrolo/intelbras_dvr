@@ -146,17 +146,17 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
         option_labels: list[str] = []
 
         all_ch = sorted(self._channel_names.keys()) or self._channels
-        for idx, ch in enumerate(all_ch):
+        for ch in all_ch:
             cam_name = self._channel_names.get(ch, f"Channel {ch + 1}")
             label = single_tpl.format(name=cam_name)
-            action = ("split1", idx)
+            action = ("split1", ch)
             self._label_to_action[label] = action
             self._action_to_label[action] = label
             option_labels.append(label)
             # Register alternate language aliases for automation compatibility
             self._label_to_action[f"Visualização de 1: {cam_name}"] = action
             self._label_to_action[f"View 1: {cam_name}"] = action
-            self._label_to_action[f"split1:{idx}"] = action
+            self._label_to_action[f"split1:{ch}"] = action
 
         data = self.coordinator.data or {}
         monitor_caps: list[int] = list(data.get("monitor_caps") or [1, 4, 8, 9, 16])
@@ -238,15 +238,17 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
         mode, group = action
         canonical_label = self._action_to_label.get(action, option)
 
-        self._optimistic_option = canonical_label
-        self.async_write_ha_state()
-
-        ok = await self.coordinator.client.set_monitor_split(mode=mode, group=group)
+        ok = await asyncio.shield(
+            self.coordinator.client.set_monitor_split(mode=mode, group=group)
+        )
         if ok:
+            self._optimistic_option = canonical_label
             if self.coordinator.data is not None:
                 self.coordinator.data["monitor_mode"] = {"mode": mode, "group": group}
-            await asyncio.sleep(1.0)
-            await self.coordinator.async_request_refresh()
+                self.coordinator.async_update_listeners()
+            else:
+                self.async_write_ha_state()
+            await self.coordinator.async_refresh_monitor_mode()
         else:
             self._optimistic_option = None
             self.async_write_ha_state()

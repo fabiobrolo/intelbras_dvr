@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -20,7 +20,7 @@ Desenvolvida seguindo os padrões arquiteturais modernos do Home Assistant (HA 2
 
 ---
 
-## 🚀 Melhorias Arquiteturais Recentes (v0.4.0)
+## 🚀 Melhorias Arquiteturais Recentes (v0.5.0)
 
 1. **Arquitetura Padrão Platinum Home Assistant:**
    * Tipagem estrita PEP 695 (`type IntelbrasDVRConfigEntry = ConfigEntry[IntelbrasDVRData]`) e estado estruturado `DVRRuntimeState(TypedDict)` no `DataUpdateCoordinator`.
@@ -51,7 +51,6 @@ A tabela abaixo lista os modelos de hardware verificados, versão de firmware e 
 | Modelo / Firmware | Live RTSP (Main / Sub) | Instantâneos (Snapshots) | Reprodução de Gravação (HLS) | Áudio Dinâmico AAC (go2rtc) | Miniaturas de Gravação | Eventos Push em Tempo Real | Controles de Imagem | Máscara de Privacidade | Divisão Monitor HDMI/VGA | Controles PTZ | Diagnósticos & Reinicialização |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Intelbras iMHDX 3008**<br>`4.001.00IB001.0.T` | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado |
-| **Intelbras MHDX 1108**<br>`4.001.00IB000.1` | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado |
 
 ---
 
@@ -83,6 +82,24 @@ A tabela abaixo lista os modelos de hardware verificados, versão de firmware e 
 | `switch` | `privacy_mask` | `privacy` | Oculta o vídeo da câmera (`Brightness=0, Contrast=0, Saturation=0`) e restaura os valores anteriores ao desativar |
 | `button` | `ptz_up`, `ptz_down`, `ptz_left`, `ptz_right`, `ptz_zoom_in`, `ptz_zoom_out` | `ptz` | Botões direcionais e de zoom PTZ com parada automática (criados apenas em canais com suporte a PTZ) |
 | `select` | `ptz_preset` | `ptz` | Move a câmera PTZ para uma predefinição descoberta (criado apenas em canais com presets configurados) |
+
+---
+
+## 🔐 Pré-requisitos: Usuário Dedicado e Permissões no DVR (Recomendado)
+
+Antes de adicionar a integração no Home Assistant, **recomenda-se fortemente criar um usuário exclusivo para a integração** diretamente na interface do seu DVR Intelbras (**Sistema > Conta > Usuário**):
+
+1. **Por que utilizar um usuário específico para a integração?**
+   * Evita conflitos de sessão e bloqueios temporários de segurança (`HTTP 401` / *lockout* de IP ou conta) quando contas pessoais ou o usuário `admin` são utilizados simultaneamente em aplicativos móveis (Intelbras iSIC / Guardian) ou navegadores web.
+   * Facilita a auditoria nos registros do equipamento (**Sistema > Log**), diferenciando claramente as ações automatizadas do Home Assistant dos acessos de usuários.
+   * Habilite a opção **Reutilizável** (*Reusable*) no cadastro do usuário (caso disponível no seu firmware) para permitir múltiplas conexões RTSP e HTTP simultâneas sem queda de sessão.
+
+2. **Permissões Necessárias no DVR:**
+   Vincule o usuário ao grupo **`admin`** (ou conceda todas as permissões abaixo antes de iniciar a configuração no Home Assistant):
+   * **Monitor / Visualização ao Vivo** e **Reprodução / Pesquisa**: Obrigatórias para transmissão RTSP ao vivo, captura de instantâneos (snapshots) CGI e reprodução de gravações pelo Navegador de Mídia em todos os canais.
+   * **Controle PTZ**: Necessária para movimentação direcional, zoom e acionamento de predefinições (presets) PTZ.
+   * **Configurações de Sistema / Codificação / Câmera / Gravação / Tela**: Necessárias para leitura automática dos nomes e capacidades dos canais, ajuste de parâmetros de imagem (`Brilho`, `Contraste`, `Saturação`, `Matiz`, `Nitidez`), acionamento da Máscara de Privacidade, alteração do modo de gravação (`Agendado`, `Manual`, `Desativado`) e troca da visualização na saída física de vídeo HDMI/VGA (`split1`, `split4`, `split8`, `split9`, `split16`).
+   * **Informações do Sistema / HD / Atualização / Manutenção**: Necessárias para os sensores de diagnóstico de disco rígido, verificação de novas versões de firmware e uso do botão de reinicialização do DVR.
 
 ---
 

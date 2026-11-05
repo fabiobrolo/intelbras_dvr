@@ -240,16 +240,18 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
                 translation_key="set_video_color_failed",
                 translation_placeholders={"channel": str(channel)},
             )
-        await data.coordinator.async_request_refresh()
+        await data.coordinator.async_refresh_video_color()
 
     async def handle_set_monitor_split(call: ServiceCall) -> None:
         data = _runtime(call)
         mode: str = call.data["mode"]
         group: int = call.data["group"]
-        ok = await data.client.set_monitor_split(
-            mode=mode,
-            group=group,
-            channel=call.data.get("channel", 1),
+        ok = await asyncio.shield(
+            data.client.set_monitor_split(
+                mode=mode,
+                group=group,
+                channel=call.data.get("channel", 1),
+            )
         )
         if not ok:
             raise HomeAssistantError(
@@ -257,8 +259,10 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
                 translation_key="set_monitor_split_failed",
                 translation_placeholders={"mode": str(mode)},
             )
-        if data.coordinator.data and "monitor_mode" in data.coordinator.data:
+        if data.coordinator.data is not None:
             data.coordinator.data["monitor_mode"] = {"mode": mode, "group": group}
+            data.coordinator.async_update_listeners()
+        await data.coordinator.async_refresh_monitor_mode()
 
     async def handle_mask_camera(call: ServiceCall) -> None:
         data = _runtime(call)
