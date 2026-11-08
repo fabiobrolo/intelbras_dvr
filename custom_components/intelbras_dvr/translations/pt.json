@@ -324,6 +324,12 @@
       "message": "O DVR não aceitou o comando de atualização online. Atualize manualmente em {url}."
     }
   },
+  "issues": {
+    "auth_retrying": {
+      "title": "Tentando reautenticar no DVR ({host})",
+      "description": "O Home Assistant recebeu erros repetidos de autenticação (HTTP 401/403) do DVR Intelbras em {host}. A integração está aguardando intervalos crescentes entre as tentativas para evitar bloqueio da conta no DVR e se recuperará automaticamente assim que a autenticação voltar a funcionar.\n\nSe você alterou a senha ou as permissões do usuário no DVR, abra o menu da integração e selecione **Reconfigurar** para atualizar as credenciais imediatamente."
+    }
+  },
   "services": {
     "set_video_color": {
       "name": "Definir cor do vídeo",

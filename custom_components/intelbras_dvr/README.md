@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -20,13 +20,22 @@ Designed following modern Home Assistant Platinum-tier architectural standards (
 
 ---
 
-## 🚀 Recent Architectural Upgrades (v0.5.0)
+## 🛡️ Resilience & Authentication Stability (v0.5.1)
+
+* **Serialized Digest Auth Queue & Transient `401` Self-Healing (`dvr.py`):** Replaced concurrent HTTP request pools with a strict async lock (`_request_lock`), clearing stale CGI cookies after responses and automatically resetting the HTTP Digest session for one clean retry (`0.35s`) on transient `HTTP 401` nonce mismatches—preventing Digest race conditions and DVR IP/account lockouts.
+* **Auto-Recovery Without Forced Reauth (`coordinator.py`, `__init__.py`, `const.py`):** Replaced permanent `ConfigEntryAuthFailed` halts with `UpdateFailed` and `ConfigEntryNotReady` (`retry_after`) paired with an escalating anti-lockout cooldown (`65s → 180s → 300s → 600s` capped at `LOGIN_LOCKOUT_MAX_BACKOFF`) and a non-blocking **Repairs** warning (`auth_retrying`), recovering automatically without manual reauthentication once the DVR responds.
+* **2-Attempt Grace Period & Entity Availability Fix (`entity.py`):** Fixed `DVREntity.available` and `CameraChannelEntity.available` so transient communication glitches keep the prior state for up to two consecutive polls without triggering false `offline`/`unavailable` alerts.
+* **Event Stream Backoff & Deprecation Cleanup (`coordinator.py`, `__init__.py`, `config_flow.py`):** Fixed exponential reconnect backoff in `IntelbrasEventCoordinator` (now resets only after HTTP `200` stream attach), skipped redundant startup baseline calls, preserved options in `OptionsFlow`, and removed the deprecated `add_update_listener` callback (eliminating the Home Assistant `2026.12.0` deprecation warning).
+
+---
+
+## 🚀 Architectural Upgrades (v0.5.0)
 
 1. **Platinum-Tier Home Assistant Architecture:**
    * Strict PEP 695 typing (`type IntelbrasDVRConfigEntry = ConfigEntry[IntelbrasDVRData]`) and structured `DVRRuntimeState(TypedDict)` in `DataUpdateCoordinator`.
    * Standardized `EntityDescription` dataclasses (`SensorEntityDescription`, `BinarySensorEntityDescription`, `ButtonEntityDescription`, `NumberEntityDescription`, `SelectEntityDescription`, `SwitchEntityDescription`, `UpdateEntityDescription`, `CameraEntityDescription`) across all platforms.
    * Native `reauth` and `reconfigure` flows in `config_flow.py`, allowing seamless password updates or IP/port changes from the Home Assistant UI without recreating entities.
-   * Proper exception routing (`ConfigEntryAuthFailed`, `ConfigEntryNotReady`, `ServiceValidationError`, and `HomeAssistantError`) with full `translation_domain` and `translation_key` localization.
+   * Proper exception routing (`ConfigEntryNotReady`, `UpdateFailed`, `ServiceValidationError`, and `HomeAssistantError`) with automatic recovery and full `translation_domain` and `translation_key` localization.
 
 2. **100% Dynamic Hardware & Configuration Discovery (HTTP API V3.35):**
    * Unified `async_discover_channels()` querying `ChannelTitle`, `VideoIn` (`devVideoInput.cgi?action=getCollect`), and `RemoteDevice` to dynamically detect total channels (`4`, `8`, `16`, `32`), active analog/IP cameras, signal formats (`HDCVI`, `AHD`, `TVI`, `CVBS`, `IP`), PTZ presets (`ptz.cgi?action=getPresets`), audio codecs, and video profiles.
@@ -132,7 +141,7 @@ Before adding the integration in Home Assistant, it is **strongly recommended** 
 >
 > 🔧 **Reconfigure Flow:** Open the three-dot menu on the integration card and select **Reconfigure** to update the DVR's IP address, HTTP/RTSP ports, or credentials without losing entity history.
 >
-> 🔐 **Reauthentication Flow:** If the DVR password is changed, Home Assistant will automatically prompt you to re-enter credentials via the native repair notification.
+> 🔐 **Credentials & Auto-Recovery:** If the DVR returns repeated `401/403` errors, the integration pauses safely with an anti-lockout cooldown, creates a non-blocking **Repairs** warning (`auth_retrying`), and resumes automatically once access is restored — or open **Reconfigure** if you changed the DVR password.
 
 ---
 

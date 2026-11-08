@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -27,6 +28,7 @@ from .const import (
     ENCODE_CGI,
     EVENT_MANAGER_CGI,
     LOGIN_LOCKOUT_BACKOFF,
+    LOGIN_LOCKOUT_MAX_BACKOFF,
     MAGICBOX_CGI,
     MEDIAFILEFIND_CGI,
     PTZ_CGI,
@@ -82,6 +84,7 @@ class IntelbrasClient:
         password: str,
         http_port: int = DEFAULT_HTTP_PORT,
         rtsp_port: int = DEFAULT_RTSP_PORT,
+        backoff_on_401: bool = True,
     ) -> None:
         """Initialise the client."""
         self.host = host
@@ -89,9 +92,11 @@ class IntelbrasClient:
         self.password = password
         self.http_port = http_port
         self.rtsp_port = rtsp_port
+        self._backoff_on_401: bool = backoff_on_401
         self._lockout_until: float = 0.0
+        self._auth_failure_streak: int = 0
         self._client: httpx.AsyncClient | None = None
-        self._http_sem: asyncio.Semaphore = asyncio.Semaphore(4)
+        self._request_lock: asyncio.Lock = asyncio.Lock()
         self._saved_video_colors: dict[int, dict[str, int]] = {}
         self._channel_supports_acutance: set[int] = set()
         self._channel_profiles: dict[int, set[int]] = {}
@@ -104,6 +109,49 @@ class IntelbrasClient:
         self._monitor_caps: list[int] | None = None
         self._latest_fw_version: str | None = None
         self._monitor_lock = asyncio.Lock()
+
+    @property
+    def auth_lockout_remaining(self) -> float:
+        """Return seconds remaining in the current anti-lockout cooldown."""
+        return max(0.0, self._lockout_until - time.monotonic())
+
+    @property
+    def lockout_deadline(self) -> float:
+        """Return the monotonic timestamp until which auth retries are paused."""
+        return self._lockout_until
+
+    @property
+    def auth_failure_streak(self) -> int:
+        """Return the number of unresolved consecutive auth failures."""
+        return self._auth_failure_streak
+
+    def set_lockout_until(self, deadline: float, streak: int = 1) -> None:
+        """Restore a persisted anti-lockout deadline and failure streak."""
+        if deadline > time.monotonic() and deadline > self._lockout_until:
+            self._lockout_until = deadline
+        if streak > self._auth_failure_streak:
+            self._auth_failure_streak = streak
+
+    def reset_auth_backoff(self) -> None:
+        """Reset auth cooldown and streak after any authenticated response."""
+        self._lockout_until = 0.0
+        self._auth_failure_streak = 0
+
+    def _record_auth_failure(self) -> float:
+        """Record an unresolved auth failure and activate escalating anti-lockout cooldown."""
+        self._auth_failure_streak += 1
+        if not self._backoff_on_401:
+            return 0.0
+        schedule = (
+            LOGIN_LOCKOUT_BACKOFF,
+            180.0,
+            300.0,
+            LOGIN_LOCKOUT_MAX_BACKOFF,
+        )
+        idx = min(self._auth_failure_streak - 1, len(schedule) - 1)
+        cooldown = schedule[idx]
+        self._lockout_until = max(self._lockout_until, time.monotonic() + cooldown)
+        return self.auth_lockout_remaining
 
     @property
     def total_channels(self) -> int:
@@ -165,47 +213,94 @@ class IntelbrasClient:
             await self._client.aclose()
             self._client = None
 
+    async def _reset_http_client_locked(self) -> None:
+        """Close and clear the cached HTTP client while holding ``_request_lock``."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
+    async def _request_with_retry(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+        timeout: float = 10.0,
+    ) -> httpx.Response:
+        """Execute a serialized HTTP request with single fresh-client self-heal on transient 401."""
+        remaining = self.auth_lockout_remaining
+        if remaining > 0:
+            raise DVRAuthError(
+                f"Temporary lockout active for {remaining:.0f}s "
+                "due to previous authentication failure."
+            )
+
+        url = self.base_url + path
+        async with self._request_lock:
+            remaining = self.auth_lockout_remaining
+            if remaining > 0:
+                raise DVRAuthError(
+                    f"Temporary lockout active for {remaining:.0f}s "
+                    "due to previous authentication failure."
+                )
+
+            can_self_heal = self._backoff_on_401 and self._auth_failure_streak == 0
+            max_attempts = 2 if can_self_heal else 1
+
+            for attempt in range(max_attempts):
+                client = await self._get_http_client()
+                try:
+                    if method == "POST":
+                        resp = await client.post(url, json=json, timeout=timeout)
+                    else:
+                        resp = await client.get(url, params=params, timeout=timeout)
+                except httpx.ConnectError as exc:
+                    raise DVRConnectionError(f"Cannot connect to DVR at {url}") from exc
+                except httpx.TimeoutException as exc:
+                    raise DVRConnectionError(f"Timeout connecting to DVR at {url}") from exc
+                except httpx.HTTPError as exc:
+                    raise DVRConnectionError(
+                        f"HTTP error communicating with DVR at {url}: {exc}"
+                    ) from exc
+
+                if resp.status_code != 401:
+                    client.cookies.clear()
+                    if resp.status_code == 200:
+                        self.reset_auth_backoff()
+                    return resp
+
+                _LOGGER.debug(
+                    "DVR returned 401 for %s (attempt %d/%d, streak=%d); resetting Digest session.",
+                    path,
+                    attempt + 1,
+                    max_attempts,
+                    self._auth_failure_streak,
+                )
+                await self._reset_http_client_locked()
+                if attempt + 1 < max_attempts:
+                    await asyncio.sleep(0.35)
+
+            cooldown = self._record_auth_failure()
+            if cooldown > 0:
+                _LOGGER.warning(
+                    "DVR returned 401 Unauthorized on %s; anti-lockout cooldown active for %ds (streak=%d).",
+                    path,
+                    int(cooldown),
+                    self._auth_failure_streak,
+                )
+            else:
+                _LOGGER.error("DVR returned 401 Unauthorized on %s.", path)
+            raise DVRAuthError("Invalid credentials (401 Unauthorized)")
+
     async def _get(
         self,
         path: str,
         params: dict[str, Any] | None = None,
         timeout: float = 10.0,
     ) -> httpx.Response:
-        """Perform a GET request with lockout protection against 401 ban and bounded concurrency."""
-        loop = asyncio.get_running_loop()
-        if loop.time() < self._lockout_until:
-            raise DVRAuthError(
-                f"Temporary lockout active for {self._lockout_until - loop.time():.0f}s "
-                "due to previous authentication failure."
-            )
-
-        client = await self._get_http_client()
-        url = self.base_url + path
-        async with self._http_sem:
-            if loop.time() < self._lockout_until:
-                raise DVRAuthError(
-                    f"Temporary lockout active for {self._lockout_until - loop.time():.0f}s "
-                    "due to previous authentication failure."
-                )
-            try:
-                resp = await client.get(url, params=params, timeout=timeout)
-            except httpx.ConnectError as exc:
-                raise DVRConnectionError(f"Cannot connect to DVR at {url}") from exc
-            except httpx.TimeoutException as exc:
-                raise DVRConnectionError(f"Timeout connecting to DVR at {url}") from exc
-            except httpx.HTTPError as exc:
-                raise DVRConnectionError(f"HTTP error communicating with DVR at {url}: {exc}") from exc
-
-        if resp.status_code == 401:
-            self._lockout_until = loop.time() + LOGIN_LOCKOUT_BACKOFF
-            _LOGGER.error(
-                "DVR returned 401 Unauthorized. Lockout activated for %ds.",
-                int(LOGIN_LOCKOUT_BACKOFF),
-            )
-            raise DVRAuthError("Invalid credentials (401 Unauthorized)")
-        if resp.status_code == 200:
-            self._lockout_until = 0.0
-        return resp
+        """Perform a serialized GET request with Digest self-healing and anti-lockout protection."""
+        return await self._request_with_retry("GET", path, params=params, timeout=timeout)
 
     async def _post_json(
         self,
@@ -213,29 +308,8 @@ class IntelbrasClient:
         payload: dict[str, Any],
         timeout: float = 10.0,
     ) -> httpx.Response:
-        """Perform a POST JSON request (used by V3.35 endpoints such as CloudUpgrader)."""
-        loop = asyncio.get_running_loop()
-        if loop.time() < self._lockout_until:
-            raise DVRAuthError("Temporary lockout active due to previous authentication failure.")
-
-        client = await self._get_http_client()
-        url = self.base_url + path
-        async with self._http_sem:
-            try:
-                resp = await client.post(url, json=payload, timeout=timeout)
-            except httpx.ConnectError as exc:
-                raise DVRConnectionError(f"Cannot connect to DVR at {url}") from exc
-            except httpx.TimeoutException as exc:
-                raise DVRConnectionError(f"Timeout connecting to DVR at {url}") from exc
-            except httpx.HTTPError as exc:
-                raise DVRConnectionError(f"HTTP error communicating with DVR at {url}: {exc}") from exc
-
-        if resp.status_code == 401:
-            self._lockout_until = loop.time() + LOGIN_LOCKOUT_BACKOFF
-            raise DVRAuthError("Invalid credentials (401 Unauthorized)")
-        if resp.status_code == 200:
-            self._lockout_until = 0.0
-        return resp
+        """Perform a serialized POST JSON request (used by V3.35 endpoints such as CloudUpgrader)."""
+        return await self._request_with_retry("POST", path, json=payload, timeout=timeout)
 
     # ------------------------------------------------------------------
     # System information & Dynamic Hardware Discovery
@@ -245,6 +319,7 @@ class IntelbrasClient:
         """Return hardware information (serial number, model, processor)."""
         resp = await self._get(f"{MAGICBOX_CGI}?action=getSystemInfo")
         if resp.status_code == 403:
+            self._record_auth_failure()
             raise DVRAuthError("Access forbidden (403 Forbidden)")
         result: dict[str, str] = {}
         if resp.status_code == 200:
@@ -316,6 +391,8 @@ class IntelbrasClient:
                     ).upper()
                     if any(fmt in sig for fmt in ("HDCVI", "CVI", "AHD", "TVI", "CVBS", "NTSC", "PAL")):
                         self._channel_signal_formats[ch] = "HDCVI" if "CVI" in sig else sig
+        except DVRAuthError:
+            raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("Failed multi-param channel query: %s", exc)
 
@@ -333,6 +410,8 @@ class IntelbrasClient:
                         match = pattern.match(line.strip())
                         if match:
                             titles[int(match.group(1))] = match.group(2).replace("|", " ").strip()
+            except DVRAuthError:
+                raise
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.debug("Failed ChannelTitle query: %s", exc)
 
@@ -376,18 +455,23 @@ class IntelbrasClient:
             return {}, [], set()
 
         candidate_channels = list(available_channels.keys())
-        ptz_task = self.detect_ptz_channels(candidate_channels)
-        onvif_task = self.get_onvif_channels()
-        results = await asyncio.gather(ptz_task, onvif_task, return_exceptions=True)
+        ptz_res: list[int] = []
+        onvif_res: set[int] = set()
+        try:
+            ptz_res = await self.detect_ptz_channels(candidate_channels)
+        except DVRAuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("PTZ channel discovery failed: %s", exc)
+        try:
+            onvif_res = await self.get_onvif_channels()
+        except DVRAuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("ONVIF channel discovery failed: %s", exc)
 
-        ptz_res, onvif_res = results
-        ptz_channels: list[int] = (
-            [ch for ch in ptz_res if ch in available_channels]
-            if isinstance(ptz_res, list)
-            else []
-        )
-        onvif_channels: set[int] = onvif_res if isinstance(onvif_res, set) else set()
-        return available_channels, ptz_channels, onvif_channels
+        ptz_channels: list[int] = [ch for ch in ptz_res if ch in available_channels]
+        return available_channels, ptz_channels, onvif_res
 
     async def get_monitor_caps(self) -> list[int]:
         """Discover supported preview split modes (e.g. [1, 4, 8, 9, 16]) from the DVR.
@@ -421,6 +505,8 @@ class IntelbrasClient:
                         max_enc_idx = max(max_enc_idx, int(m_enc.group(1)))
                 if max_enc_idx >= 0:
                     self._total_channels = max(self._total_channels, max_enc_idx + 1)
+        except DVRAuthError:
+            raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("encode.cgi?action=getCaps not available: %s", exc)
 
@@ -435,6 +521,8 @@ class IntelbrasClient:
                     m_col = re.search(r"result=(\d+)", resp_vin.text)
                     if m_col:
                         self._total_channels = max(self._total_channels, int(m_col.group(1)))
+            except DVRAuthError:
+                raise
             except Exception:  # noqa: BLE001
                 pass
 
@@ -529,7 +617,7 @@ class IntelbrasClient:
     async def detect_ptz_channels(self, channels: list[int] | None = None) -> list[int]:
         """Detect zero-based channel indices that support PTZ control.
 
-        Queries ``ptz.cgi?action=getPresets`` (1-based channel numbering) in parallel.
+        Queries ``ptz.cgi?action=getPresets`` (1-based channel numbering) sequentially.
         Note: ``ptz.cgi?action=getStatus`` is intentionally NOT used because the DVR's
         ONVIF stack returns ``status.MoveStatus=Idle`` even for fixed non-PTZ ONVIF cameras.
         """
@@ -537,13 +625,16 @@ class IntelbrasClient:
             try:
                 titles = await self.get_channel_titles()
                 channels = list(titles.keys())
+            except DVRAuthError:
+                raise
             except Exception:  # noqa: BLE001
                 channels = []
 
         if not channels:
             return []
 
-        async def _check_channel(ch: int) -> int | None:
+        detected: list[int] = []
+        for ch in channels:
             try:
                 resp = await self._get(
                     PTZ_CGI,
@@ -551,13 +642,12 @@ class IntelbrasClient:
                     timeout=2.0,
                 )
                 if resp.status_code == 200 and "presets[" in resp.text:
-                    return ch
+                    detected.append(ch)
+            except DVRAuthError:
+                raise
             except Exception:  # noqa: BLE001
                 pass
-            return None
-
-        results = await asyncio.gather(*(_check_channel(ch) for ch in channels))
-        return sorted({ch for ch in results if ch is not None})
+        return sorted(set(detected))
 
     async def get_onvif_channels(self) -> set[int]:
         """Return zero-based indices of channels connected via ONVIF."""
@@ -569,6 +659,8 @@ class IntelbrasClient:
                 if (dev.get("protocol") or "").lower() == "onvif"
                 or (dev.get("vendor") or "").lower() == "onvif"
             }
+        except DVRAuthError:
+            raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("Failed to detect ONVIF channels: %s", exc)
             return set()
@@ -606,6 +698,8 @@ class IntelbrasClient:
                     if attention:
                         result["release_notes"] = str(attention).strip()
                     return result
+        except DVRAuthError:
+            raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("CloudUpgrader check not supported, trying upgrade.cgi: %s", exc)
 
@@ -1076,6 +1170,8 @@ class IntelbrasClient:
             )
             if resp.status_code == 200:
                 self._parse_encode_config(resp.text)
+        except DVRAuthError:
+            raise
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("Failed to fetch Encode config from DVR: %s", exc)
 
@@ -1244,7 +1340,9 @@ class IntelbrasClient:
                     for ch in indexes:
                         if ch in status:
                             status[ch][sensor_key] = True
-            except (DVRConnectionError, DVRAuthError) as exc:
+            except DVRAuthError:
+                raise
+            except DVRConnectionError as exc:
                 _LOGGER.debug("Failed checking event %s: %s", cgi_code, exc)
         return status
 
@@ -1300,6 +1398,13 @@ class IntelbrasClient:
             "VideoBlind": "video_blind",
         }
 
+        remaining = self.auth_lockout_remaining
+        if remaining > 0:
+            raise DVRAuthError(
+                f"Temporary lockout active for {remaining:.0f}s "
+                "due to previous authentication failure."
+            )
+
         async with httpx.AsyncClient(
             auth=httpx.DigestAuth(self.username, self.password),
             verify=False,
@@ -1307,15 +1412,22 @@ class IntelbrasClient:
         ) as stream_client:
             async with stream_client.stream("GET", url) as response:
                 if response.status_code in (401, 403):
+                    cooldown = self._record_auth_failure()
                     raise DVRAuthError(
-                        f"Unauthorized connecting to DVR event stream ({response.status_code})"
+                        f"Unauthorized connecting to DVR event stream ({response.status_code}; cooldown {int(cooldown)}s)"
                     )
                 if response.status_code != 200:
                     raise DVRConnectionError(
                         f"DVR event stream returned unexpected HTTP status {response.status_code}"
                     )
 
+                self.reset_auth_backoff()
                 _LOGGER.info("Connected to Intelbras DVR persistent event stream on %s", self.host)
+                if heartbeat_callback is not None:
+                    try:
+                        heartbeat_callback()
+                    except Exception:  # noqa: BLE001
+                        pass
                 aiter = response.aiter_lines()
 
                 while not (stop_event and stop_event.is_set()):
@@ -1396,6 +1508,8 @@ class IntelbrasClient:
 
     async def get_snapshot(self, channel: int, timeout: float = 2.5) -> bytes | None:
         """Fetch a still image JPEG for a channel (0-based index)."""
+        if self.auth_lockout_remaining > 0:
+            return None
         url = f"{SNAPSHOT_CGI}?channel={channel + 1}"
         try:
             resp = await self._get(url, timeout=timeout)

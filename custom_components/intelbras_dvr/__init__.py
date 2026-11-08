@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import logging
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -12,7 +13,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import (
-    ConfigEntryAuthFailed,
     ConfigEntryNotReady,
     HomeAssistantError,
     ServiceValidationError,
@@ -30,7 +30,6 @@ from .const import (
     CONF_HTTP_PORT,
     CONF_PTZ_CHANNELS,
     CONF_RTSP_PORT,
-    CONF_SNAPSHOT_INTERVAL,
     DEFAULT_ACUTANCE,
     DEFAULT_BRIGHTNESS,
     DEFAULT_CONTRAST,
@@ -38,7 +37,6 @@ from .const import (
     DEFAULT_HUE,
     DEFAULT_RTSP_PORT,
     DEFAULT_SATURATION_ACUTANCE,
-    DEFAULT_SNAPSHOT_INTERVAL,
     DOMAIN,
     MAX_ACUTANCE,
     MAX_COLOR_VALUE,
@@ -426,23 +424,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: IntelbrasDVRConfigEntry)
         rtsp_port=entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
     )
 
-    try:
-        active_titles = await client.get_channel_titles()
-        if active_titles:
-            cleaned_names = {str(ch): name for ch, name in active_titles.items()}
-            if cleaned_names != entry.data.get("channel_names", {}):
-                hass.config_entries.async_update_entry(
-                    entry,
-                    data={**entry.data, "channel_names": cleaned_names},
-                )
-    except DVRAuthError as exc:
-        await client.close()
-        raise ConfigEntryAuthFailed(
-            translation_domain=DOMAIN,
-            translation_key="auth_failed",
-        ) from exc
-    except Exception as exc:  # noqa: BLE001
-        _LOGGER.debug("Could not refresh channel titles during setup: %s", exc)
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    lockout_state = domain_data.get("auth_lockout_state", {}).get(entry.entry_id)
+    if isinstance(lockout_state, dict):
+        client.set_lockout_until(
+            float(lockout_state.get("deadline", 0.0)),
+            int(lockout_state.get("streak", 0)),
+        )
 
     coordinator = IntelbrasCoordinator(hass, entry, client)
     event_coordinator = IntelbrasEventCoordinator(
@@ -451,16 +439,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: IntelbrasDVRConfigEntry)
 
     try:
         await coordinator.async_config_entry_first_refresh()
-    except ConfigEntryAuthFailed:
+    except ConfigEntryNotReady:
         await client.close()
         raise
     except DVRAuthError as exc:
+        coordinator._publish_auth_lockout()
+        remaining = client.auth_lockout_remaining
         await client.close()
-        raise ConfigEntryAuthFailed(
+        raise ConfigEntryNotReady(
             translation_domain=DOMAIN,
             translation_key="auth_failed",
+            retry_after=remaining + 2.0 if remaining > 0 else None,
         ) from exc
-    except (DVRConnectionError, ConfigEntryNotReady) as exc:
+    except DVRConnectionError as exc:
         await client.close()
         raise ConfigEntryNotReady(
             translation_domain=DOMAIN,
@@ -604,7 +595,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: IntelbrasDVRConfigEntry)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
 
 
@@ -639,28 +629,3 @@ async def async_remove_config_entry_device(
                 except ValueError:
                     return True
     return True
-
-
-async def _async_reload_entry(
-    hass: HomeAssistant, entry: IntelbrasDVRConfigEntry
-) -> None:
-    """Reload the config entry when structural options change."""
-    if hasattr(entry, "runtime_data") and entry.runtime_data:
-        coord = entry.runtime_data.coordinator
-        old_opts = coord._last_synced_options
-        diff_keys = {
-            k for k, v in entry.options.items() if old_opts.get(k) != v
-        } | {k for k, v in old_opts.items() if entry.options.get(k) != v}
-        if diff_keys <= {CONF_SNAPSHOT_INTERVAL}:
-            coord.snapshot_interval = float(
-                entry.options.get(CONF_SNAPSHOT_INTERVAL, DEFAULT_SNAPSHOT_INTERVAL)
-            )
-            coord._last_synced_options = dict(entry.options)
-            _LOGGER.debug(
-                "Updated snapshot_interval to %s without reloading config entry",
-                coord.snapshot_interval,
-            )
-            return
-        coord._last_synced_options = dict(entry.options)
-
-    await hass.config_entries.async_reload(entry.entry_id)

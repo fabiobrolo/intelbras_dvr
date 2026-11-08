@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -20,13 +20,22 @@ Desenvolvida seguindo os padrões arquiteturais modernos do Home Assistant (HA 2
 
 ---
 
-## 🚀 Melhorias Arquiteturais Recentes (v0.5.0)
+## 🛡️ Resiliência e Estabilidade de Autenticação (v0.5.1)
+
+* **Fila Serializada de Autenticação Digest e Autocorreção de `401` Transitório (`dvr.py`):** Substituição do pool concorrente de requisições HTTP por uma trava assíncrona (`_request_lock`), limpeza automática de cookies CGI após respostas e reinicialização da sessão Digest para uma nova tentativa limpa (`0,35s`) em falhas transitórias `HTTP 401` de *nonce*, evitando condições de corrida e bloqueios de IP/usuário no DVR.
+* **Recuperação Automática Sem Reautenticação Forçada (`coordinator.py`, `__init__.py`, `const.py`):** Substituição da interrupção permanente via `ConfigEntryAuthFailed` por `UpdateFailed` e `ConfigEntryNotReady` (`retry_after`), combinados com *cooldown* progressivo anti-bloqueio (`65s → 180s → 300s → 600s` em `LOGIN_LOCKOUT_MAX_BACKOFF`) e aviso não bloqueante em **Reparos** (`auth_retrying`), recuperando automaticamente sem exigir reautenticação manual.
+* **Período de Tolerância e Correção de Disponibilidade (`entity.py`):** Correção de `DVREntity.available` e `CameraChannelEntity.available` para manter o estado anterior durante até 2 falhas consecutivas na coleta, evitando falsos alertas de `unavailable` / `offline`.
+* **Backoff do Stream de Eventos e Limpeza de Depreciação (`coordinator.py`, `__init__.py`, `config_flow.py`):** Correção do backoff exponencial de reconexão no `IntelbrasEventCoordinator` (reiniciado apenas após conexão HTTP `200` confirmada), eliminação de consulta duplicada na inicialização, preservação das opções no `OptionsFlow` e remoção do callback obsoleto `add_update_listener` (eliminando o aviso de depreciação do Home Assistant `2026.12.0`).
+
+---
+
+## 🚀 Melhorias Arquiteturais (v0.5.0)
 
 1. **Arquitetura Padrão Platinum Home Assistant:**
    * Tipagem estrita PEP 695 (`type IntelbrasDVRConfigEntry = ConfigEntry[IntelbrasDVRData]`) e estado estruturado `DVRRuntimeState(TypedDict)` no `DataUpdateCoordinator`.
    * Uso padronizado de dataclasses `EntityDescription` (`SensorEntityDescription`, `BinarySensorEntityDescription`, `ButtonEntityDescription`, `NumberEntityDescription`, `SelectEntityDescription`, `SwitchEntityDescription`, `UpdateEntityDescription`, `CameraEntityDescription`) em todas as plataformas.
    * Fluxos nativos de `reauth` e `reconfigure` no `config_flow.py`, permitindo atualizar credenciais ou alterar IP/portas diretamente pela interface do Home Assistant sem perder o histórico das entidades.
-   * Tratamento assíncrono rigoroso de exceções (`ConfigEntryAuthFailed`, `ConfigEntryNotReady`, `ServiceValidationError` e `HomeAssistantError`) com suporte completo a traduções via `translation_domain` e `translation_key`.
+   * Tratamento assíncrono rigoroso de exceções (`ConfigEntryNotReady`, `UpdateFailed`, `ServiceValidationError` e `HomeAssistantError`) com recuperação automática e suporte completo a traduções via `translation_domain` e `translation_key`.
 
 2. **Descoberta 100% Dinâmica de Hardware e Configurações (HTTP API V3.35):**
    * Método unificado `async_discover_channels()` que consulta `ChannelTitle`, `VideoIn` (`devVideoInput.cgi?action=getCollect`) e `RemoteDevice` para detectar dinamicamente a quantidade total de canais do DVR (`4`, `8`, `16`, `32`), câmeras analógicas e IP ativas, formato de sinal (`HDCVI`, `AHD`, `TVI`, `CVBS`, `IP`), predefinições PTZ (`ptz.cgi?action=getPresets`), codecs de áudio e perfis de vídeo.
@@ -132,7 +141,7 @@ Antes de adicionar a integração no Home Assistant, **recomenda-se fortemente c
 >
 > 🔧 **Fluxo de Reconfiguração:** Abra o menu de três pontos no cartão da integração e selecione **Reconfigurar** para atualizar o endereço IP, portas HTTP/RTSP ou credenciais do DVR sem perder o histórico das entidades.
 >
-> 🔐 **Fluxo de Reautenticação:** Caso a senha do DVR seja alterada, o Home Assistant solicitará automaticamente as novas credenciais por meio de uma notificação nativa de reparo.
+> 🔐 **Credenciais e Recuperação Automática:** Caso o DVR retorne erros repetidos (`401/403`), a integração aplica um intervalo seguro anti-bloqueio, exibe um aviso não bloqueante em **Reparos** (`auth_retrying`) e retorna ao normal automaticamente assim que o acesso for restabelecido — ou selecione **Reconfigurar** se você alterou a senha no DVR.
 
 ---
 

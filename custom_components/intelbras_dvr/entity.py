@@ -105,13 +105,8 @@ class DVREntity(CoordinatorEntity[IntelbrasCoordinator]):
 
     @property
     def available(self) -> bool:
-        """Return True when DVR data is loaded and consecutive failures are below threshold."""
-        if (
-            self.coordinator.data is not None
-            and self.coordinator._consecutive_failures < 3
-        ):
-            return True
-        return super().available
+        """Return True when coordinator succeeded and consecutive failures are below threshold."""
+        return super().available and self.coordinator._consecutive_failures < 3
 
 
 class CameraChannelEntity(CoordinatorEntity[IntelbrasCoordinator]):
@@ -140,13 +135,8 @@ class CameraChannelEntity(CoordinatorEntity[IntelbrasCoordinator]):
 
     @property
     def available(self) -> bool:
-        """Return True when DVR data is loaded and consecutive failures are below threshold."""
-        if (
-            self.coordinator.data is not None
-            and self.coordinator._consecutive_failures < 3
-        ):
-            return True
-        return super().available
+        """Return True when coordinator succeeded and consecutive failures are below threshold."""
+        return super().available and self.coordinator._consecutive_failures < 3
 
     @property
     def _video_color(self) -> dict[str, int]:

@@ -6,7 +6,7 @@ from enum import StrEnum
 from homeassistant.const import Platform
 
 DOMAIN = "intelbras_dvr"
-INTEGRATION_VERSION = "0.5.0"
+INTEGRATION_VERSION = "0.5.1"
 
 # ---------------------------------------------------------------------------
 # Configuration keys
@@ -40,8 +40,9 @@ DEFAULT_ACUTANCE = 1
 MAX_COLOR_VALUE = 100
 MAX_ACUTANCE = 15
 
-# Back-off after a 401/403 Unauthorized to prevent DVR IP ban
-LOGIN_LOCKOUT_BACKOFF = 10.0  # seconds
+# Back-off after unresolved 401/403 Unauthorized to prevent DVR IP/account ban
+LOGIN_LOCKOUT_BACKOFF = 65.0  # seconds (escalates up to LOGIN_LOCKOUT_MAX_BACKOFF)
+LOGIN_LOCKOUT_MAX_BACKOFF = 600.0  # seconds (DVR LoginFailLockTime default)
 
 # PTZ momentary button move duration (seconds)
 PTZ_MOVE_DURATION = 0.5

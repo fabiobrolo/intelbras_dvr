@@ -16,7 +16,11 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import AbortFlow
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    device_registry as dr,
+    entity_registry as er,
+    issue_registry as ir,
+)
 from homeassistant.helpers.selector import (
     SelectOptionDict,
     SelectSelector,
@@ -85,6 +89,7 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                 password=self._password,
                 http_port=self._http_port,
                 rtsp_port=self._rtsp_port,
+                backoff_on_401=False,
             )
             try:
                 info = await client.get_system_info()
@@ -279,12 +284,19 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                 password=password,
                 http_port=entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT),
                 rtsp_port=entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
+                backoff_on_401=False,
             )
             try:
                 info = await client.get_system_info()
                 if not info:
                     errors["base"] = "cannot_connect"
                 else:
+                    self.hass.data.get(DOMAIN, {}).get("auth_lockout_state", {}).pop(
+                        entry.entry_id, None
+                    )
+                    ir.async_delete_issue(
+                        self.hass, DOMAIN, f"auth_retrying_{entry.entry_id}"
+                    )
                     return self.async_update_reload_and_abort(
                         entry,
                         data_updates={
@@ -336,12 +348,19 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                 password=password,
                 http_port=http_port,
                 rtsp_port=rtsp_port,
+                backoff_on_401=False,
             )
             try:
                 info = await client.get_system_info()
                 if not info:
                     errors["base"] = "cannot_connect"
                 else:
+                    self.hass.data.get(DOMAIN, {}).get("auth_lockout_state", {}).pop(
+                        entry.entry_id, None
+                    )
+                    ir.async_delete_issue(
+                        self.hass, DOMAIN, f"auth_retrying_{entry.entry_id}"
+                    )
                     return self.async_update_reload_and_abort(
                         entry,
                         data_updates={
@@ -418,6 +437,16 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
             http_port=self.config_entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT),
             rtsp_port=self.config_entry.data.get(CONF_RTSP_PORT, DEFAULT_RTSP_PORT),
         )
+        lockout_state = (
+            self.hass.data.get(DOMAIN, {})
+            .get("auth_lockout_state", {})
+            .get(self.config_entry.entry_id)
+        )
+        if isinstance(lockout_state, dict):
+            client.set_lockout_until(
+                float(lockout_state.get("deadline", 0.0)),
+                int(lockout_state.get("streak", 0)),
+            )
         existing_channel_names = self.config_entry.data.get("channel_names", {})
         configured_channels = set(self.config_entry.data.get(CONF_CHANNELS, []))
         fallback_channels = {
@@ -574,11 +603,15 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
                     for ch, name in self._available_channels.items()
                 },
             }
-            self.hass.config_entries.async_update_entry(
+            if self.hass.config_entries.async_update_entry(
                 self.config_entry, data=updated_data
+            ):
+                self.hass.config_entries.async_schedule_reload(
+                    self.config_entry.entry_id
+                )
+            return self.async_create_entry(
+                title="", data=dict(self.config_entry.options)
             )
-            await self.hass.config_entries.async_reload(self.config_entry.entry_id)
-            return self.async_create_entry(title="", data={})
 
         stored_features: dict[str, list[str]] = self.config_entry.data.get(
             CONF_FEATURES, {}

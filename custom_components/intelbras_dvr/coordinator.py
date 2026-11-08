@@ -8,8 +8,9 @@ from datetime import timedelta
 from typing import Any, TypedDict
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -23,6 +24,7 @@ from .const import (
     DEFAULT_SNAPSHOT_INTERVAL,
     DOMAIN,
     FIRMWARE_CHECK_INTERVAL,
+    LOGIN_LOCKOUT_BACKOFF,
     RECORD_MODE_SCHEDULE,
 )
 from .dvr import DVRAuthError, DVRConnectionError, IntelbrasClient
@@ -83,14 +85,26 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         self.snapshot_interval: float = float(
             entry.options.get(CONF_SNAPSHOT_INTERVAL, DEFAULT_SNAPSHOT_INTERVAL)
         )
-        self._last_synced_options: dict[str, Any] = dict(entry.options)
         self._consecutive_failures: int = 0
+        self._auth_probe_failures: int = 0
+        self._auth_issue_created: bool = False
+        self._cleared_startup_issue: bool = False
+        lockout_state = (
+            hass.data.get(DOMAIN, {})
+            .get("auth_lockout_state", {})
+            .get(entry.entry_id)
+        )
+        if isinstance(lockout_state, dict):
+            self._auth_probe_failures = int(lockout_state.get("streak", 0))
+            if self._auth_probe_failures >= 3:
+                self._auth_issue_created = True
         self._last_response_time_ms: float | None = None
 
         self._cached_system_info: dict[str, str] | None = None
         self._cached_software_version: str | None = None
         self._cached_remote_devices: dict[int, dict[str, Any]] | None = None
         self._cached_monitor_caps: list[int] | None = None
+        self._titles_synced: bool = False
         self._cached_ptz_presets: dict[int, dict[int, str]] = {}
         self._presets_loaded: bool = False
         self._last_firmware_check: float = 0.0
@@ -119,7 +133,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         return {int(k): v for k, v in raw.items()}
 
     async def async_load_ptz_presets(self) -> None:
-        """Fetch PTZ presets once on startup or entry reconfiguration."""
+        """Fetch PTZ presets sequentially on startup or entry reconfiguration."""
         ptz_chs = self.ptz_channels
         if not ptz_chs:
             self._presets_loaded = True
@@ -128,127 +142,253 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             "Fetching PTZ presets on initialization/reconfiguration for channels: %s",
             ptz_chs,
         )
-        preset_tasks = [self.client.get_ptz_presets(ch) for ch in ptz_chs]
-        preset_results = await asyncio.gather(*preset_tasks, return_exceptions=True)
-        for ch, res in zip(ptz_chs, preset_results):
-            if isinstance(res, dict):
-                self._cached_ptz_presets[ch] = res
-            elif isinstance(res, Exception):
-                _LOGGER.warning("Could not fetch PTZ presets for channel %d: %s", ch, res)
+        for ch in ptz_chs:
+            if self.client.auth_lockout_remaining > 0:
+                return
+            try:
+                res = await self.client.get_ptz_presets(ch)
+                if isinstance(res, dict):
+                    self._cached_ptz_presets[ch] = res
+            except DVRAuthError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.warning(
+                    "Could not fetch PTZ presets for channel %d: %s", ch, exc
+                )
         self._presets_loaded = True
 
-    async def _async_update_data(self) -> DVRRuntimeState:
-        """Fetch fresh state from the DVR with minimal overhead."""
-        channels = self.selected_channels
+    def _publish_auth_lockout(self) -> None:
+        """Persist auth lockout deadline and streak in hass.data across reloads."""
+        state_map = self.hass.data.setdefault(DOMAIN, {}).setdefault(
+            "auth_lockout_state", {}
+        )
+        state_map[self.config_entry.entry_id] = {
+            "deadline": self.client.lockout_deadline,
+            "streak": max(self._auth_probe_failures, self.client.auth_failure_streak),
+        }
 
-        # Fetch PTZ presets only on startup or reconfig
-        if not self._presets_loaded:
-            await self.async_load_ptz_presets()
+    def _clear_auth_issue(self) -> None:
+        """Reset auth failure counters and clear any active Repairs warning."""
+        had_auth_issue = (
+            self._auth_probe_failures > 0
+            or self._auth_issue_created
+            or not self._cleared_startup_issue
+        )
+        self._auth_probe_failures = 0
+        self._auth_issue_created = False
+        self._cleared_startup_issue = True
+        self.hass.data.get(DOMAIN, {}).get("auth_lockout_state", {}).pop(
+            self.config_entry.entry_id, None
+        )
+        if had_auth_issue:
+            ir.async_delete_issue(
+                self.hass,
+                DOMAIN,
+                f"auth_retrying_{self.config_entry.entry_id}",
+            )
 
-        # Cache static system info / software version / remote devices / monitor caps on first run
-        if (
-            self._cached_system_info is None
-            or self._cached_software_version is None
-            or self._cached_remote_devices is None
-            or self._cached_monitor_caps is None
-        ):
-            init_tasks = [
-                self.client.get_system_info(),
-                self.client.get_software_version(),
-                self.client.get_channel_titles(),
-                self.client.get_monitor_caps(),
-            ]
-            init_results = await asyncio.gather(*init_tasks, return_exceptions=True)
-            sys_info_res, sw_version_res, active_titles_res, monitor_caps_res = init_results
+    def _handle_auth_error(
+        self, exc: Exception | None = None, *, probed: bool = True
+    ) -> DVRRuntimeState:
+        """Handle auth failure cleanly without blocking polling or forcing reauth."""
+        self._consecutive_failures += 1
+        if probed:
+            self._auth_probe_failures = max(
+                self._auth_probe_failures + 1, self.client.auth_failure_streak
+            )
+            self._publish_auth_lockout()
 
-            if isinstance(sys_info_res, DVRAuthError):
-                raise ConfigEntryAuthFailed(
-                    translation_domain=DOMAIN,
-                    translation_key="auth_failed",
-                ) from sys_info_res
+        if self._auth_probe_failures >= 3 and not self._auth_issue_created:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                f"auth_retrying_{self.config_entry.entry_id}",
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="auth_retrying",
+                translation_placeholders={
+                    "host": str(
+                        self.config_entry.data.get(CONF_HOST, self.client.host)
+                    ),
+                },
+            )
+            self._auth_issue_created = True
 
-            if isinstance(active_titles_res, dict) and active_titles_res:
-                cleaned_names = {str(ch): name for ch, name in active_titles_res.items()}
-                if cleaned_names != self.config_entry.data.get("channel_names", {}):
-                    self.hass.config_entries.async_update_entry(
-                        self.config_entry,
-                        data={**self.config_entry.data, "channel_names": cleaned_names},
-                    )
-
-            remote_dev_res = await self.client.get_remote_devices()
-            if isinstance(remote_dev_res, dict):
-                self._cached_remote_devices = remote_dev_res
-            if isinstance(sys_info_res, dict):
-                self._cached_system_info = sys_info_res
-            if isinstance(monitor_caps_res, list) and monitor_caps_res:
-                self._cached_monitor_caps = monitor_caps_res
-            else:
-                self._cached_monitor_caps = [1, 4, 8, 9, 16]
-
-            if (
-                isinstance(sw_version_res, str)
-                and sw_version_res.strip()
-                and sw_version_res.strip() != "Unknown"
-            ):
-                self._cached_software_version = sw_version_res.strip()
-            elif isinstance(self._cached_system_info, dict):
-                self._cached_software_version = (
-                    self._cached_system_info.get("softwareVersion")
-                    or self._cached_system_info.get("version")
-                )
-
-        now = time.monotonic()
-        should_check_firmware = (now - self._last_firmware_check) >= FIRMWARE_CHECK_INTERVAL
-
-        # Dynamic tasks: Grouped config (VideoColor + RecordMode + Encode), Monitor mode, Storage info
-        tasks: list[Any] = [
-            self.client.get_batch_config(channels),
-            self.client.get_monitor_mode(channel=1),
-            self.client.get_storage_info(),
-        ]
-
-        t0 = time.monotonic()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        self._last_response_time_ms = round((time.monotonic() - t0) * 1000, 1)
-        batch_config, monitor_mode, storage_info = results
-        _LOGGER.debug("DVR monitor mode: %r", monitor_mode)
-
-        if should_check_firmware:
-            try:
-                fw_info = await self.client.check_firmware_update()
-                self._cached_firmware_info = fw_info
-                self._last_firmware_check = now
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.debug("Firmware check skipped: %s", exc)
-
-        def _safe(result: Any, default: Any) -> Any:
-            if isinstance(result, Exception):
-                _LOGGER.debug("DVR endpoint error (using default): %s", result)
-                return default
-            return result
-
-        if isinstance(batch_config, DVRAuthError):
-            raise ConfigEntryAuthFailed(
+        remaining = self.client.auth_lockout_remaining
+        if self._consecutive_failures >= 3 or self.data is None:
+            retry_after = (
+                max(float(DEFAULT_SCAN_INTERVAL), remaining + 2.0)
+                if remaining > 0
+                else None
+            )
+            raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="auth_failed",
-            ) from batch_config
+                retry_after=retry_after,
+            ) from exc
 
-        if isinstance(batch_config, Exception):
+        _LOGGER.warning(
+            "DVR authentication error (%d/3); keeping previous state and retrying automatically (cooldown %.0fs): %s",
+            self._consecutive_failures,
+            remaining,
+            exc or "anti-lockout cooldown active",
+        )
+        return self.data
+
+    async def _async_update_data(self) -> DVRRuntimeState:
+        """Fetch fresh state from the DVR sequentially with minimal overhead."""
+        channels = self.selected_channels
+
+        if self.client.auth_lockout_remaining > 0:
+            return self._handle_auth_error(probed=False)
+
+        try:
+            # Fetch PTZ presets only on startup or reconfig
+            if not self._presets_loaded:
+                await self.async_load_ptz_presets()
+
+            # Cache static system info / software version / remote devices / monitor caps on first run
+            if (
+                self._cached_system_info is None
+                or self._cached_software_version is None
+                or self._cached_remote_devices is None
+                or self._cached_monitor_caps is None
+            ):
+                if self._cached_system_info is None:
+                    try:
+                        sys_info_res = await self.client.get_system_info()
+                        if isinstance(sys_info_res, dict):
+                            self._cached_system_info = sys_info_res
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_system_info error: %s", exc)
+
+                if self._cached_software_version is None:
+                    try:
+                        sw_version_res = await self.client.get_software_version()
+                        if (
+                            isinstance(sw_version_res, str)
+                            and sw_version_res.strip()
+                            and sw_version_res.strip() != "Unknown"
+                        ):
+                            self._cached_software_version = sw_version_res.strip()
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_software_version error: %s", exc)
+
+                    if (
+                        self._cached_software_version is None
+                        and isinstance(self._cached_system_info, dict)
+                    ):
+                        self._cached_software_version = (
+                            self._cached_system_info.get("softwareVersion")
+                            or self._cached_system_info.get("version")
+                        )
+
+                if not self._titles_synced:
+                    try:
+                        active_titles_res = await self.client.get_channel_titles()
+                        if isinstance(active_titles_res, dict) and active_titles_res:
+                            cleaned_names = {
+                                str(ch): name for ch, name in active_titles_res.items()
+                            }
+                            if cleaned_names != self.config_entry.data.get(
+                                "channel_names", {}
+                            ):
+                                self.hass.config_entries.async_update_entry(
+                                    self.config_entry,
+                                    data={
+                                        **self.config_entry.data,
+                                        "channel_names": cleaned_names,
+                                    },
+                                )
+                            self._titles_synced = True
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_channel_titles error: %s", exc)
+
+                if self._cached_monitor_caps is None:
+                    try:
+                        monitor_caps_res = await self.client.get_monitor_caps()
+                        if isinstance(monitor_caps_res, list) and monitor_caps_res:
+                            self._cached_monitor_caps = monitor_caps_res
+                        else:
+                            self._cached_monitor_caps = [1, 4, 8, 9, 16]
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_monitor_caps error: %s", exc)
+                        self._cached_monitor_caps = [1, 4, 8, 9, 16]
+
+                if self._cached_remote_devices is None:
+                    try:
+                        remote_dev_res = await self.client.get_remote_devices()
+                        if isinstance(remote_dev_res, dict):
+                            self._cached_remote_devices = remote_dev_res
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_remote_devices error: %s", exc)
+
+            now = time.monotonic()
+            should_check_firmware = (
+                now - self._last_firmware_check
+            ) >= FIRMWARE_CHECK_INTERVAL
+
+            t0 = time.monotonic()
+            batch_config = await self.client.get_batch_config(channels)
+
+            monitor_mode: dict[str, Any] = {}
+            try:
+                monitor_mode = await self.client.get_monitor_mode(channel=1)
+            except DVRAuthError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("DVR endpoint error (using default): %s", exc)
+
+            storage_info: dict[str, Any] = {}
+            try:
+                storage_info = await self.client.get_storage_info()
+            except DVRAuthError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("DVR endpoint error (using default): %s", exc)
+
+            self._last_response_time_ms = round((time.monotonic() - t0) * 1000, 1)
+            _LOGGER.debug("DVR monitor mode: %r", monitor_mode)
+
+            if should_check_firmware:
+                try:
+                    fw_info = await self.client.check_firmware_update()
+                    self._cached_firmware_info = fw_info
+                    self._last_firmware_check = now
+                except DVRAuthError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("Firmware check skipped: %s", exc)
+
+        except DVRAuthError as exc:
+            return self._handle_auth_error(exc, probed=True)
+        except Exception as exc:
             self._consecutive_failures += 1
             if self._consecutive_failures >= 3:
                 raise UpdateFailed(
-                    f"Cannot reach DVR after {self._consecutive_failures} attempts: {batch_config}"
-                ) from batch_config
+                    f"Cannot reach DVR after {self._consecutive_failures} attempts: {exc}"
+                ) from exc
             _LOGGER.warning(
                 "DVR poll error (%d/3); keeping previous state: %s",
                 self._consecutive_failures,
-                batch_config,
+                exc,
             )
             if self.data is not None:
                 return self.data
-            raise UpdateFailed(f"Cannot reach DVR: {batch_config}") from batch_config
+            raise UpdateFailed(f"Cannot reach DVR: {exc}") from exc
 
         self._consecutive_failures = 0
+        self._clear_auth_issue()
 
         encode_info: dict[int, dict[str, Any]] = {}
         if isinstance(batch_config, tuple) and len(batch_config) == 3:
@@ -271,11 +411,11 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             "remote_devices": self._cached_remote_devices or {},
             "monitor_caps": self._cached_monitor_caps or [1, 4, 8, 9, 16],
             "total_channels": total_channels,
-            "monitor_mode": _safe(monitor_mode, {}),
-            "video_color": _safe(video_color, {}),
-            "storage_info": _safe(storage_info, {}),
-            "record_modes": _safe(record_modes, {}),
-            "encode_info": _safe(encode_info, {}),
+            "monitor_mode": monitor_mode,
+            "video_color": video_color,
+            "storage_info": storage_info,
+            "record_modes": record_modes,
+            "encode_info": encode_info,
             "ptz_presets": self._cached_ptz_presets,
             "firmware_update": self._cached_firmware_info,
             "online": True,
@@ -374,6 +514,8 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         self.stream_connected: bool = False
         self.reconnect_count: int = 0
         self.last_heartbeat: str | None = None
+        self._stream_backoff: float = 2.0
+        self._baseline_fresh_until: float = 0.0
         self._pulse_reset_tasks: dict[tuple[int, str], asyncio.TimerHandle] = {}
 
     def suppress_video_blind(self, channel: int, duration: float = 30.0) -> None:
@@ -501,33 +643,33 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         self.async_set_updated_data(filtered)
 
     def _handle_heartbeat(self) -> None:
-        """Invoked on heartbeat or line received from stream."""
+        """Invoked on stream connection, heartbeat, or event line received."""
         was_connected = self.stream_connected
         self.stream_connected = True
+        self._stream_backoff = 2.0
         self.last_heartbeat = dt_util.now().isoformat(timespec="seconds")
         if not was_connected:
             self.async_set_updated_data(dict(self.data or {}))
 
     async def _run_stream(self) -> None:
         """Persistent background worker that connects to the event stream with auto-reconnect."""
-        backoff = 2.0
+        self._stream_backoff = 2.0
         while not self._stop_event.is_set():
             try:
                 _LOGGER.info("Starting Intelbras DVR persistent event stream...")
                 channels = self.selected_channels
-                try:
-                    baseline = await self.client.get_event_status(channels)
-                    self._apply_baseline(baseline)
-                except Exception as exc:  # noqa: BLE001
-                    _LOGGER.debug(
-                        "Initial baseline event fetch failed before stream attach: %s",
-                        exc,
-                    )
+                if time.monotonic() > self._baseline_fresh_until or self.data is None:
+                    try:
+                        baseline = await self.client.get_event_status(channels)
+                        self._apply_baseline(baseline)
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug(
+                            "Initial baseline event fetch failed before stream attach: %s",
+                            exc,
+                        )
 
-                self.stream_connected = True
-                self.last_heartbeat = dt_util.now().isoformat(timespec="seconds")
-                self.async_set_updated_data(dict(self.data or {}))
-                backoff = 2.0
                 await self.client.listen_event_stream(
                     event_callback=self._handle_stream_event,
                     codes=[
@@ -541,27 +683,53 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
                     stop_event=self._stop_event,
                     heartbeat_callback=self._handle_heartbeat,
                 )
+                if not self._stop_event.is_set():
+                    self.stream_connected = False
+                    self.async_set_updated_data(dict(self.data or {}))
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        pass
             except asyncio.CancelledError:
                 self.stream_connected = False
                 self.async_set_updated_data(dict(self.data or {}))
                 _LOGGER.debug("Intelbras DVR event stream worker cancelled.")
                 break
+            except DVRAuthError as exc:
+                self.stream_connected = False
+                self.reconnect_count += 1
+                self.async_set_updated_data(dict(self.data or {}))
+                if self._stop_event.is_set():
+                    break
+                wait_for = max(
+                    self.client.auth_lockout_remaining + 2.0, LOGIN_LOCKOUT_BACKOFF
+                )
+                _LOGGER.warning(
+                    "Intelbras DVR event stream auth cooldown (%s). Retrying in %.1fs...",
+                    exc,
+                    wait_for,
+                )
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=wait_for)
+                except asyncio.TimeoutError:
+                    pass
             except Exception as exc:  # noqa: BLE001
                 self.stream_connected = False
                 self.reconnect_count += 1
                 self.async_set_updated_data(dict(self.data or {}))
                 if self._stop_event.is_set():
                     break
+                wait_for = self._stream_backoff
                 _LOGGER.warning(
                     "Intelbras DVR event stream disconnected (%s). Reconnecting in %.1fs...",
                     exc,
-                    backoff,
+                    wait_for,
                 )
                 try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=backoff)
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=wait_for)
                 except asyncio.TimeoutError:
                     pass
-                backoff = min(backoff * 2, 60.0)
+                self._stream_backoff = min(self._stream_backoff * 2, 60.0)
 
     async def _async_update_data(self) -> dict[int, dict[str, bool]]:
         """Fetch active alarm / event indexes from the DVR on demand (manual refresh)."""
@@ -577,6 +745,7 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
                 if self._is_video_blind_suppressed(ch):
                     ch_dict["video_blind"] = False
                 filtered[ch] = ch_dict
+            self._baseline_fresh_until = time.monotonic() + 5.0
             return filtered
         except (DVRConnectionError, DVRAuthError) as exc:
             _LOGGER.debug("Event poll skipped (DVR unreachable): %s", exc)
