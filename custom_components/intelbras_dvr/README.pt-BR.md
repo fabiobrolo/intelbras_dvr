@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -17,6 +17,18 @@
 Integração personalizada de alta performance para o **Home Assistant** dedicada a DVRs e NVRs **Intelbras** (e equipamentos compatíveis baseados em Dahua) em conformidade com a especificação **API of HTTP Protocol Specification V3.35**. Comunicação 100% local através de APIs HTTP CGI (stream de eventos `local_push` + `DataUpdateCoordinator`) e fluxos de vídeo RTSP, com zero dependência de nuvem.
 
 Desenvolvida seguindo os padrões arquiteturais modernos do Home Assistant (HA 2024.4+ / 2026.x / Python 3.14), utilizando `ConfigEntry[IntelbrasDVRData]` (`runtime_data`), dataclasses `EntityDescription` em todas as plataformas, descoberta 100% dinâmica de hardware/canais/mosaicos de vídeo, fluxos nativos de Reautenticação (`reauth`) e Reconfiguração (`reconfigure`), localização completa em Português do Brasil e Inglês, execução assíncrona não bloqueante e reprodução de gravações diretamente no Navegador de Mídia com miniaturas de pré-visualização.
+
+---
+
+## 🛡️ Diagnósticos Avançados do Sistema, Segurança e IA Perimetral IVS (v0.6.0)
+
+* **Monitoramento de Sessões e Usuários Conectados (`userManager.cgi`):** Acompanhamento em tempo real de conexões ativas, tipo de cliente (`Web3.0`, `Dahua3.0`, aplicativos móveis), endereço IP de origem e horário de login via `sensor.dvr_intelbras_usuarios_conectados`.
+* **Integridade do HD e Diagnóstico de Partições (`storageDevice.cgi`):** Sensor binário de falha física no barramento IDE/SATA (`binary_sensor.dvr_intelbras_falha_de_disco`), verificação de erros no sistema de arquivos em todas as partições e botão de atualização de diagnóstico sob demanda (`button.dvr_intelbras_atualizar_diagnostico_do_hd`).
+* **Eventos Push em Tempo Real do Sistema (`eventManager.cgi?action=attach`):** Alertas instantâneos (sem polling) para `StorageFailure` (falha de leitura/gravação/I/O no HD), `StorageNotExist` (disco ausente ou desconectado), `StorageLowSpace` (espaço crítico em disco) e `LoginFailureAlarm` (tentativas repetidas de invasão/força bruta).
+* **Inteligência Artificial de Vídeo (IVS):** Sensores binários em tempo real para `CrossLineDetection` (Linha Virtual / Tripwire) e `CrossRegionDetection` (Cerca Virtual / Intrusão de Área).
+* **Diagnóstico de Conectividade de Rede (`netApp.cgi`):** Sensor de velocidade do link (`Mbit/s`), endereço MAC e sensor binário de integridade do cabo de rede.
+* **Serviço de Consulta de Logs de Auditoria (`log.cgi`):** Novo serviço `intelbras_dvr.get_logs` que retorna registros de eventos e auditoria diretamente no Home Assistant.
+* **Descoberta 100% Dinâmica de Capacidades:** Os fluxos de Configuração e Opções detectam automaticamente quais recursos do sistema o equipamento suporta.
 
 ---
 

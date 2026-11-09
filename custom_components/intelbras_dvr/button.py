@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 from .const import (
     CONF_CHANNELS,
     CONF_FEATURES,
+    CONF_MONITOR_STORAGE,
     CONF_PTZ_CHANNELS,
     DEFAULT_SATURATION_ANALOG,
     CameraFeature,
@@ -36,6 +37,13 @@ DVR_REFRESH_DESCRIPTION = ButtonEntityDescription(
     key="dvr_refresh",
     translation_key="dvr_refresh",
     icon="mdi:refresh",
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+DVR_REFRESH_STORAGE_DESCRIPTION = ButtonEntityDescription(
+    key="refresh_storage",
+    translation_key="refresh_storage",
+    icon="mdi:harddisk",
     entity_category=EntityCategory.DIAGNOSTIC,
 )
 
@@ -72,6 +80,9 @@ async def async_setup_entry(
         DVRRebootButton(coordinator, entry),
         DVRRefreshButton(coordinator, entry),
     ]
+
+    if entry.data.get(CONF_MONITOR_STORAGE, True):
+        entities.append(DVRRefreshStorageButton(coordinator, entry))
 
     for ch in channels:
         name = channel_names.get(ch, f"Channel {ch + 1}")
@@ -129,6 +140,23 @@ class DVRRefreshButton(DVREntity, ButtonEntity):
     async def async_press(self) -> None:
         """Request an immediate coordinator refresh."""
         await self.coordinator.async_request_refresh()
+
+
+class DVRRefreshStorageButton(DVREntity, ButtonEntity):
+    """Button that forces an immediate refresh of storage and hard drive diagnostics."""
+
+    entity_description: ButtonEntityDescription = DVR_REFRESH_STORAGE_DESCRIPTION
+
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the storage refresh button."""
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_refresh_storage"
+
+    async def async_press(self) -> None:
+        """Request an immediate storage diagnostics refresh."""
+        await self.coordinator.async_refresh_storage()
 
 
 class CameraRefreshButton(CameraChannelEntity, ButtonEntity):

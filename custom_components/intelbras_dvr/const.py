@@ -6,7 +6,7 @@ from enum import StrEnum
 from homeassistant.const import Platform
 
 DOMAIN = "intelbras_dvr"
-INTEGRATION_VERSION = "0.5.1"
+INTEGRATION_VERSION = "0.6.0"
 
 # ---------------------------------------------------------------------------
 # Configuration keys
@@ -18,6 +18,10 @@ CONF_CHANNELS = "channels"
 CONF_FEATURES = "features"
 CONF_PTZ_CHANNELS = "ptz_channels"  # zero-based list of channels with PTZ heads
 CONF_SNAPSHOT_INTERVAL = "snapshot_interval"
+CONF_MONITOR_USERS = "monitor_users"
+CONF_MONITOR_STORAGE = "monitor_storage"
+CONF_MONITOR_NETWORK = "monitor_network"
+CONF_MONITOR_EVENTS = "monitor_events"
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -65,6 +69,10 @@ SNAPSHOT_CGI = "/cgi-bin/snapshot.cgi"
 MEDIAFILEFIND_CGI = "/cgi-bin/mediaFileFind.cgi"
 EVENT_MANAGER_CGI = "/cgi-bin/eventManager.cgi"
 STORAGE_CGI = "/cgi-bin/storageDevice.cgi"
+USER_MANAGER_CGI = "/cgi-bin/userManager.cgi"
+NET_APP_CGI = "/cgi-bin/netApp.cgi"
+GLOBAL_CGI = "/cgi-bin/global.cgi"
+LOG_CGI = "/cgi-bin/log.cgi"
 PTZ_CGI = "/cgi-bin/ptz.cgi"
 UPGRADE_CGI = "/cgi-bin/upgrade.cgi"
 UPGRADER_CGI = "/cgi-bin/upgrader.cgi"
@@ -115,9 +123,13 @@ class CameraFeature(StrEnum):
     VIDEO_COLOR = "video_color"
     PTZ = "ptz"
     RECORDING = "recording"  # manual recording switch
+    CROSS_LINE = "cross_line"  # IVS Tripwire detection
+    CROSS_REGION = "cross_region"  # IVS Perimeter intrusion detection
 
 
 ALL_CAMERA_FEATURES: list[str] = list(CameraFeature)
+
+SERVICE_GET_LOGS = "get_logs"
 
 # Features that are only offered when PTZ is auto-detected for a channel
 PTZ_ONLY_FEATURES: frozenset[str] = frozenset({CameraFeature.PTZ})

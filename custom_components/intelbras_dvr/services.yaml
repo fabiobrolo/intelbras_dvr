@@ -320,3 +320,52 @@ ptz_preset:
         number:
           min: 1
           max: 255
+
+get_logs:
+  name: Get Logs
+  description: Query audit and event logs from the DVR.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        config_entry:
+          integration: intelbras_dvr
+    log_type:
+      name: Log Type
+      description: Category of logs to search (All, System, Config, Storage, Alarm, Record, Account, Clear).
+      required: false
+      default: "All"
+      selector:
+        select:
+          options:
+            - "All"
+            - "System"
+            - "Config"
+            - "Storage"
+            - "Alarm"
+            - "Record"
+            - "Account"
+            - "Clear"
+    count:
+      name: Count
+      description: Maximum number of log items to retrieve (1 to 100).
+      required: false
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 100
+    start_time:
+      name: Start Time
+      description: "Start timestamp in YYYY-MM-DD HH:MM:SS format (default: 24 hours ago)."
+      required: false
+      selector:
+        text:
+    end_time:
+      name: End Time
+      description: "End timestamp in YYYY-MM-DD HH:MM:SS format (default: now)."
+      required: false
+      selector:
+        text:

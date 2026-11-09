@@ -23,7 +23,11 @@
         "title": "Channel Features",
         "description": "Select the features and entity platforms to enable for the selected cameras ({cameras}).",
         "data": {
-          "features": "Enabled Features"
+          "features": "Enabled Features",
+          "monitor_users": "Monitor Active User Sessions",
+          "monitor_storage": "Monitor Storage & HDD Health Diagnostics",
+          "monitor_network": "Monitor Network Interface & Link Speed",
+          "monitor_events": "Real-time Push Alerts (Storage & Login Failure)"
         }
       },
       "reauth_confirm": {
@@ -73,7 +77,11 @@
         "title": "Channel Features",
         "description": "Select the features and entity platforms to enable for the configured cameras.",
         "data": {
-          "features": "Enabled Features"
+          "features": "Enabled Features",
+          "monitor_users": "Monitor Active User Sessions",
+          "monitor_storage": "Monitor Storage & HDD Health Diagnostics",
+          "monitor_network": "Monitor Network Interface & Link Speed",
+          "monitor_events": "Real-time Push Alerts (Storage & Login Failure)"
         }
       }
     },
@@ -93,7 +101,9 @@
         "mask": "Privacy mask switch",
         "video_color": "Picture controls (brightness, contrast, etc.)",
         "ptz": "PTZ control (pan / tilt / zoom)",
-        "recording": "Continuous recording switch"
+        "recording": "Continuous recording switch",
+        "cross_line": "Tripwire detection sensor (IVS)",
+        "cross_region": "Perimeter intrusion sensor (IVS)"
       }
     },
     "split_mode": {
@@ -158,6 +168,27 @@
       },
       "event_stream": {
         "name": "Real-time event stream"
+      },
+      "cross_line": {
+        "name": "Tripwire"
+      },
+      "cross_region": {
+        "name": "Perimeter intrusion"
+      },
+      "storage_failure": {
+        "name": "Disk failure"
+      },
+      "storage_not_exist": {
+        "name": "Disk missing"
+      },
+      "storage_low_space": {
+        "name": "Disk low space"
+      },
+      "login_failure": {
+        "name": "Login failure attempt"
+      },
+      "network_link": {
+        "name": "Network link"
       }
     },
     "button": {
@@ -190,6 +221,9 @@
       },
       "ptz_zoom_out": {
         "name": "PTZ Zoom Out"
+      },
+      "refresh_storage": {
+        "name": "Refresh storage diagnostics"
       }
     },
     "camera": {
@@ -267,6 +301,18 @@
       },
       "consecutive_failures": {
         "name": "Consecutive connection failures"
+      },
+      "active_users": {
+        "name": "Active users"
+      },
+      "storage_status": {
+        "name": "Storage status"
+      },
+      "network_speed": {
+        "name": "Network speed"
+      },
+      "system_time": {
+        "name": "System time"
       }
     },
     "switch": {
@@ -496,6 +542,32 @@
         "preset": {
           "name": "Preset Index",
           "description": "Preset number to go to (1-based index)."
+        }
+      }
+    },
+    "get_logs": {
+      "name": "Get logs",
+      "description": "Query audit and event logs from the DVR.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "The config entry ID of the DVR (optional if only one DVR is configured)."
+        },
+        "log_type": {
+          "name": "Log Type",
+          "description": "Category of logs to search (All, System, Config, Storage, Alarm, Record, Account, Clear)."
+        },
+        "count": {
+          "name": "Count",
+          "description": "Maximum number of log items to retrieve (1 to 100)."
+        },
+        "start_time": {
+          "name": "Start Time",
+          "description": "Start timestamp in YYYY-MM-DD HH:MM:SS format (default: 24 hours ago)."
+        },
+        "end_time": {
+          "name": "End Time",
+          "description": "End timestamp in YYYY-MM-DD HH:MM:SS format (default: now)."
         }
       }
     }

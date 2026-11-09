@@ -11,7 +11,12 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
 from homeassistant.exceptions import (
     ConfigEntryNotReady,
     HomeAssistantError,
@@ -168,6 +173,21 @@ PTZ_PRESET_SCHEMA = vol.Schema(
         _ENTRY_ID_FIELD: cv.string,
         _CHANNEL_FIELD: vol.Coerce(int),
         vol.Required("preset"): vol.Coerce(int),
+    },
+    extra=vol.REMOVE_EXTRA,
+)
+
+GET_LOGS_SCHEMA = vol.Schema(
+    {
+        _ENTRY_ID_FIELD: cv.string,
+        vol.Optional("log_type", default="All"): vol.In(
+            ["All", "System", "Config", "Storage", "Alarm", "Record", "Account", "Clear"]
+        ),
+        vol.Optional("count", default=20): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=100)
+        ),
+        vol.Optional("start_time"): cv.string,
+        vol.Optional("end_time"): cv.string,
     },
     extra=vol.REMOVE_EXTRA,
 )
@@ -389,6 +409,26 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
                 },
             )
 
+    async def handle_get_logs(call: ServiceCall) -> ServiceResponse:
+        """Query audit and event logs from the DVR."""
+        data = _runtime(call)
+        log_type: str = str(call.data.get("log_type", "All"))
+        count: int = int(call.data.get("count", 20))
+        start_time: str | None = call.data.get("start_time")
+        end_time: str | None = call.data.get("end_time")
+
+        logs = await data.client.query_logs(
+            log_type=log_type,
+            count=count,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        return {
+            "count": len(logs),
+            "log_type": log_type,
+            "logs": logs,
+        }
+
     for name, handler, schema in [
         ("set_video_color", handle_set_video_color, SET_VIDEO_COLOR_SCHEMA),
         ("set_monitor_split", handle_set_monitor_split, SET_MONITOR_SPLIT_SCHEMA),
@@ -400,6 +440,14 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         ("ptz_preset", handle_ptz_preset, PTZ_PRESET_SCHEMA),
     ]:
         hass.services.async_register(DOMAIN, name, handler, schema=schema)
+
+    hass.services.async_register(
+        DOMAIN,
+        "get_logs",
+        handle_get_logs,
+        schema=GET_LOGS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
 
     try:
         register_or_update_views(hass)

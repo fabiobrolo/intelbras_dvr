@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.6.0-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -17,6 +17,18 @@
 High-performance custom integration for **Home Assistant** dedicated to **Intelbras** DVRs and NVRs (and compatible Dahua-based devices) adhering to the **HTTP Protocol Specification V3.35**. 100% local communication via HTTP CGI APIs (`local_push` event stream + `DataUpdateCoordinator`) and RTSP video streams, with zero cloud dependency.
 
 Designed following modern Home Assistant Platinum-tier architectural standards (HA 2024.4+ / 2026.x / Python 3.14), featuring typed `ConfigEntry[IntelbrasDVRData]` (`runtime_data`), `EntityDescription` dataclasses across all platforms, 100% dynamic hardware/channel/split discovery, native Reauth and Reconfigure flows, complete multi-language localization (English and Brazilian Portuguese), non-blocking event loop execution, dynamic audio transcoding, and recording playback in the Media Browser with live preview thumbnails.
+
+---
+
+## 🛡️ Deep System Diagnostics, Security & IVS AI Analytics (v0.6.0)
+
+* **Active User Sessions (`userManager.cgi`):** Monitor real-time connected sessions, clients (`Web3.0`, `Dahua3.0`, mobile apps), IP addresses, and login times via `sensor.dvr_intelbras_active_users`.
+* **HDD Health & Partition Diagnostics (`storageDevice.cgi`):** Hardware IDE/SATA damaged disk fault detector (`binary_sensor.dvr_intelbras_storage_failure`), filesystem corruption checks across all partitions, partition health table attributes, and on-demand refresh button (`button.dvr_intelbras_refresh_storage`).
+* **Real-Time Push Storage & Security Events (`eventManager.cgi?action=attach`):** Instant alerts for `StorageFailure` (HDD I/O or bad sectors), `StorageNotExist` (missing disk), `StorageLowSpace` (disk nearly full), and `LoginFailureAlarm` (brute force attack).
+* **IVS AI Video Analytics:** Real-time push sensors for `CrossLineDetection` (Tripwire / Linha Virtual) and `CrossRegionDetection` (Perimeter Intrusion / Cerca Virtual).
+* **Network Link & Interface Diagnostics (`netApp.cgi`):** Link speed (Mbit/s), MAC address, and physical link connectivity binary sensor (`binary_sensor.dvr_intelbras_network_link`).
+* **Audit & Event Log Query Service (`log.cgi`):** New service `intelbras_dvr.get_logs` returning structured audit and event logs directly to Home Assistant.
+* **100% Dynamic Capability Discovery:** Config and Options flows automatically detect which system features the DVR hardware supports.
 
 ---
 

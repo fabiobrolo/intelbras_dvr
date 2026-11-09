@@ -33,6 +33,10 @@ from .const import (
     CONF_CHANNELS,
     CONF_FEATURES,
     CONF_HTTP_PORT,
+    CONF_MONITOR_EVENTS,
+    CONF_MONITOR_NETWORK,
+    CONF_MONITOR_STORAGE,
+    CONF_MONITOR_USERS,
     CONF_PTZ_CHANNELS,
     CONF_RTSP_PORT,
     DEFAULT_HTTP_PORT,
@@ -64,7 +68,9 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
         self._ptz_channels: list[int] = []
         self._onvif_channels: set[int] = set()
         self._selected_channels: list[int] = []
+        self._system_caps: dict[str, bool] = {}
         self._reauth_entry: ConfigEntry | None = None
+        self._system_caps: dict[str, bool] = {}
 
     # ------------------------------------------------------------------
     # Step 1 – credentials
@@ -114,6 +120,7 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                         self._ptz_channels,
                         self._onvif_channels,
                     ) = await client.async_discover_channels()
+                    self._system_caps = await client.async_discover_system_capabilities()
                     if not self._available_channels:
                         errors["base"] = "no_channels"
                     else:
@@ -223,28 +230,39 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                         str(ch): name
                         for ch, name in self._available_channels.items()
                     },
+                    CONF_MONITOR_USERS: user_input.get(CONF_MONITOR_USERS, True),
+                    CONF_MONITOR_STORAGE: user_input.get(CONF_MONITOR_STORAGE, True),
+                    CONF_MONITOR_NETWORK: user_input.get(CONF_MONITOR_NETWORK, True),
+                    CONF_MONITOR_EVENTS: user_input.get(CONF_MONITOR_EVENTS, True),
                 },
             )
 
         default_features = _default_features(has_ptz)
         feature_options = _feature_options(has_ptz)
 
+        schema_dict: dict[Any, Any] = {
+            vol.Optional(
+                CONF_FEATURES, default=default_features
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=feature_options,
+                    translation_key="features",
+                    multiple=True,
+                    mode=SelectSelectorMode.LIST,
+                )
+            ),
+        }
+        if self._system_caps.get("users", True):
+            schema_dict[vol.Optional(CONF_MONITOR_USERS, default=True)] = bool
+        if self._system_caps.get("storage", True):
+            schema_dict[vol.Optional(CONF_MONITOR_STORAGE, default=True)] = bool
+        if self._system_caps.get("network", True):
+            schema_dict[vol.Optional(CONF_MONITOR_NETWORK, default=True)] = bool
+        schema_dict[vol.Optional(CONF_MONITOR_EVENTS, default=True)] = bool
+
         return self.async_show_form(
             step_id="features",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_FEATURES, default=default_features
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=feature_options,
-                            translation_key="features",
-                            multiple=True,
-                            mode=SelectSelectorMode.LIST,
-                        )
-                    ),
-                }
-            ),
+            data_schema=vol.Schema(schema_dict),
             description_placeholders={
                 "cameras": ", ".join(
                     self._available_channels.get(ch, f"Channel {ch + 1}")
@@ -425,6 +443,7 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
         self._ptz_channels: list[int] = []
         self._onvif_channels: set[int] = set()
         self._selected_channels: list[int] = []
+        self._system_caps: dict[str, bool] = {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -462,10 +481,12 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
                     self._ptz_channels,
                     self._onvif_channels,
                 ) = await client.async_discover_channels()
+                self._system_caps = await client.async_discover_system_capabilities()
             except Exception:  # noqa: BLE001
                 self._available_channels = {}
                 self._ptz_channels = []
                 self._onvif_channels = set()
+                self._system_caps = {}
 
             if not self._available_channels:
                 self._available_channels = fallback_channels
@@ -602,6 +623,18 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
                     str(ch): name
                     for ch, name in self._available_channels.items()
                 },
+                CONF_MONITOR_USERS: user_input.get(
+                    CONF_MONITOR_USERS, self.config_entry.data.get(CONF_MONITOR_USERS, True)
+                ),
+                CONF_MONITOR_STORAGE: user_input.get(
+                    CONF_MONITOR_STORAGE, self.config_entry.data.get(CONF_MONITOR_STORAGE, True)
+                ),
+                CONF_MONITOR_NETWORK: user_input.get(
+                    CONF_MONITOR_NETWORK, self.config_entry.data.get(CONF_MONITOR_NETWORK, True)
+                ),
+                CONF_MONITOR_EVENTS: user_input.get(
+                    CONF_MONITOR_EVENTS, self.config_entry.data.get(CONF_MONITOR_EVENTS, True)
+                ),
             }
             if self.hass.config_entries.async_update_entry(
                 self.config_entry, data=updated_data
@@ -637,22 +670,49 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
         else:
             current_enabled = _default_features(has_ptz)
 
+        options_schema: dict[Any, Any] = {
+            vol.Optional(
+                CONF_FEATURES, default=current_enabled
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=_feature_options(has_ptz),
+                    translation_key="features",
+                    multiple=True,
+                    mode=SelectSelectorMode.LIST,
+                )
+            ),
+        }
+        if self._system_caps.get("users", True):
+            options_schema[
+                vol.Optional(
+                    CONF_MONITOR_USERS,
+                    default=self.config_entry.data.get(CONF_MONITOR_USERS, True),
+                )
+            ] = bool
+        if self._system_caps.get("storage", True):
+            options_schema[
+                vol.Optional(
+                    CONF_MONITOR_STORAGE,
+                    default=self.config_entry.data.get(CONF_MONITOR_STORAGE, True),
+                )
+            ] = bool
+        if self._system_caps.get("network", True):
+            options_schema[
+                vol.Optional(
+                    CONF_MONITOR_NETWORK,
+                    default=self.config_entry.data.get(CONF_MONITOR_NETWORK, True),
+                )
+            ] = bool
+        options_schema[
+            vol.Optional(
+                CONF_MONITOR_EVENTS,
+                default=self.config_entry.data.get(CONF_MONITOR_EVENTS, True),
+            )
+        ] = bool
+
         return self.async_show_form(
             step_id="features",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_FEATURES, default=current_enabled
-                    ): SelectSelector(
-                        SelectSelectorConfig(
-                            options=_feature_options(has_ptz),
-                            translation_key="features",
-                            multiple=True,
-                            mode=SelectSelectorMode.LIST,
-                        )
-                    ),
-                }
-            ),
+            data_schema=vol.Schema(options_schema),
         )
 
 

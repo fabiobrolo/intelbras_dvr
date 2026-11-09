@@ -15,7 +15,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 if TYPE_CHECKING:
     from . import IntelbrasDVRConfigEntry
-from .const import CONF_CHANNELS
+from .const import (
+    CONF_CHANNELS,
+    CONF_MONITOR_NETWORK,
+    CONF_MONITOR_STORAGE,
+    CONF_MONITOR_USERS,
+)
 from .coordinator import IntelbrasCoordinator
 from .entity import CameraChannelEntity, DVREntity
 
@@ -33,6 +38,37 @@ DISK_USAGE_DESCRIPTION = SensorEntityDescription(
     icon="mdi:harddisk",
     native_unit_of_measurement=PERCENTAGE,
     state_class=SensorStateClass.MEASUREMENT,
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+ACTIVE_USERS_DESCRIPTION = SensorEntityDescription(
+    key="active_users",
+    translation_key="active_users",
+    icon="mdi:account-multiple",
+    state_class=SensorStateClass.MEASUREMENT,
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+STORAGE_STATUS_DESCRIPTION = SensorEntityDescription(
+    key="storage_status",
+    translation_key="storage_status",
+    icon="mdi:harddisk",
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+NETWORK_SPEED_DESCRIPTION = SensorEntityDescription(
+    key="network_speed",
+    translation_key="network_speed",
+    icon="mdi:ethernet",
+    native_unit_of_measurement="Mbit/s",
+    state_class=SensorStateClass.MEASUREMENT,
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+SYSTEM_TIME_DESCRIPTION = SensorEntityDescription(
+    key="system_time",
+    translation_key="system_time",
+    icon="mdi:clock-outline",
     entity_category=EntityCategory.DIAGNOSTIC,
 )
 
@@ -89,7 +125,17 @@ async def async_setup_entry(
         DVRMonitorModeSensor(coordinator, entry),
         DVRResponseTimeSensor(coordinator, entry),
         DVRConsecutiveFailuresSensor(coordinator, entry),
+        DVRSystemTimeSensor(coordinator, entry),
     ]
+
+    if entry.data.get(CONF_MONITOR_USERS, True):
+        entities.append(DVRActiveUsersSensor(coordinator, entry))
+
+    if entry.data.get(CONF_MONITOR_STORAGE, True):
+        entities.append(DVRStorageStatusSensor(coordinator, entry))
+
+    if entry.data.get(CONF_MONITOR_NETWORK, True):
+        entities.append(DVRNetworkSpeedSensor(coordinator, entry))
 
     remote_devs = (coordinator.data or {}).get("remote_devices", {})
     for ch in channels:
@@ -293,3 +339,121 @@ class DVRConsecutiveFailuresSensor(DVREntity, SensorEntity):
     def native_value(self) -> int:
         """Return consecutive failure count."""
         return int((self.coordinator.data or {}).get("consecutive_failures", 0))
+
+
+class DVRActiveUsersSensor(DVREntity, SensorEntity):
+    """Reports the number of active user sessions connected to the DVR."""
+
+    entity_description: SensorEntityDescription = ACTIVE_USERS_DESCRIPTION
+
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the active users sensor."""
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_active_users"
+
+    @property
+    def native_value(self) -> int:
+        """Return the number of active sessions."""
+        users = (self.coordinator.data or {}).get("active_users", [])
+        return len(users)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return details of connected user sessions."""
+        users = (self.coordinator.data or {}).get("active_users", [])
+        return {
+            "active_sessions": [
+                {
+                    "user": u.get("user"),
+                    "ip": u.get("ip"),
+                    "client_type": u.get("client_type"),
+                    "login_time": u.get("login_time"),
+                    "group": u.get("group"),
+                }
+                for u in users
+            ]
+        }
+
+
+class DVRStorageStatusSensor(DVREntity, SensorEntity):
+    """Reports the overall health state of the DVR storage/disk controller."""
+
+    entity_description: SensorEntityDescription = STORAGE_STATUS_DESCRIPTION
+
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the storage status sensor."""
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_storage_status"
+
+    @property
+    def native_value(self) -> str:
+        """Return overall disk status."""
+        diag = (self.coordinator.data or {}).get("storage_diagnostics", {})
+        return str(diag.get("overall_state", "Normal"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return storage partitions and diagnostic details."""
+        diag = (self.coordinator.data or {}).get("storage_diagnostics", {})
+        return {
+            "bad_disk_count": diag.get("bad_disk_count", 0),
+            "has_bad_disk": diag.get("has_bad_disk", False),
+            "filesystem_error": diag.get("filesystem_error", False),
+            "total_disks": diag.get("total_disks", 1),
+            "partitions": diag.get("partitions", []),
+        }
+
+
+class DVRNetworkSpeedSensor(DVREntity, SensorEntity):
+    """Reports the network link speed of the DVR."""
+
+    entity_description: SensorEntityDescription = NETWORK_SPEED_DESCRIPTION
+
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the network speed sensor."""
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_network_speed"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return interface link speed in Mbit/s."""
+        ifaces = (self.coordinator.data or {}).get("network_interfaces", [])
+        if ifaces and isinstance(ifaces[0], dict):
+            return ifaces[0].get("speed")
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return network interface attributes."""
+        ifaces = (self.coordinator.data or {}).get("network_interfaces", [])
+        if ifaces and isinstance(ifaces[0], dict):
+            return {
+                "interface": ifaces[0].get("name", "eth0"),
+                "mac_address": ifaces[0].get("mac_address", ""),
+                "connected": ifaces[0].get("connected", True),
+            }
+        return {}
+
+
+class DVRSystemTimeSensor(DVREntity, SensorEntity):
+    """Reports the current date/time on the DVR internal clock."""
+
+    entity_description: SensorEntityDescription = SYSTEM_TIME_DESCRIPTION
+
+    def __init__(
+        self, coordinator: IntelbrasCoordinator, entry: IntelbrasDVRConfigEntry
+    ) -> None:
+        """Initialise the DVR system time sensor."""
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_system_time"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return formatted DVR date/time."""
+        return (self.coordinator.data or {}).get("system_time")

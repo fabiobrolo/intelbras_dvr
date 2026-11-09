@@ -16,6 +16,10 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_CHANNELS,
+    CONF_MONITOR_EVENTS,
+    CONF_MONITOR_NETWORK,
+    CONF_MONITOR_STORAGE,
+    CONF_MONITOR_USERS,
     CONF_PTZ_CHANNELS,
     CONF_SNAPSHOT_INTERVAL,
     DEFAULT_BRIGHTNESS,
@@ -47,6 +51,10 @@ class DVRRuntimeState(TypedDict, total=False):
     encode_info: dict[int, dict[str, Any]]
     ptz_presets: dict[int, dict[int, str]]
     firmware_update: dict[str, Any]
+    active_users: list[dict[str, Any]]
+    storage_diagnostics: dict[str, Any]
+    network_interfaces: list[dict[str, Any]]
+    system_time: str | None
     online: bool
     response_time_ms: float | None
     consecutive_failures: int
@@ -357,6 +365,39 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.debug("DVR endpoint error (using default): %s", exc)
 
+            active_users: list[dict[str, Any]] = []
+            if self.config_entry.data.get(CONF_MONITOR_USERS, True):
+                try:
+                    active_users = await self.client.get_active_users()
+                except DVRAuthError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("DVR get_active_users error: %s", exc)
+
+            storage_diagnostics: dict[str, Any] = {}
+            if self.config_entry.data.get(CONF_MONITOR_STORAGE, True):
+                try:
+                    storage_diagnostics = await self.client.get_storage_diagnostics()
+                except DVRAuthError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("DVR get_storage_diagnostics error: %s", exc)
+
+            network_interfaces: list[dict[str, Any]] = []
+            if self.config_entry.data.get(CONF_MONITOR_NETWORK, True):
+                try:
+                    network_interfaces = await self.client.get_network_interfaces()
+                except DVRAuthError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("DVR get_network_interfaces error: %s", exc)
+
+            system_time: str | None = None
+            try:
+                system_time = await self.client.get_system_time()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("DVR get_system_time error: %s", exc)
+
             self._last_response_time_ms = round((time.monotonic() - t0) * 1000, 1)
             _LOGGER.debug("DVR monitor mode: %r", monitor_mode)
 
@@ -418,10 +459,24 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             "encode_info": encode_info,
             "ptz_presets": self._cached_ptz_presets,
             "firmware_update": self._cached_firmware_info,
+            "active_users": active_users,
+            "storage_diagnostics": storage_diagnostics,
+            "network_interfaces": network_interfaces,
+            "system_time": system_time,
             "online": True,
             "response_time_ms": self._last_response_time_ms,
             "consecutive_failures": self._consecutive_failures,
         }
+
+    async def async_refresh_storage(self) -> None:
+        """Force a fresh query of storage diagnostics and notify listeners."""
+        try:
+            diag = await self.client.get_storage_diagnostics()
+            if self.data is not None:
+                self.data["storage_diagnostics"] = diag
+                self.async_set_updated_data(dict(self.data))
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Manual storage refresh failed: %s", exc)
 
     async def async_refresh_video_color(self) -> None:
         """Quickly refresh only video color from the DVR and notify listeners (debounced)."""
@@ -517,6 +572,13 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         self._stream_backoff: float = 2.0
         self._baseline_fresh_until: float = 0.0
         self._pulse_reset_tasks: dict[tuple[int, str], asyncio.TimerHandle] = {}
+        self.system_events: dict[str, bool] = {
+            "storage_not_exist": False,
+            "storage_failure": False,
+            "storage_low_space": False,
+            "login_failure": False,
+        }
+        self._system_reset_tasks: dict[str, asyncio.TimerHandle] = {}
 
     def suppress_video_blind(self, channel: int, duration: float = 30.0) -> None:
         """Suppress video_blind false alarms when privacy mask is toggled."""
@@ -542,6 +604,9 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         for handle in self._pulse_reset_tasks.values():
             handle.cancel()
         self._pulse_reset_tasks.clear()
+        for handle in self._system_reset_tasks.values():
+            handle.cancel()
+        self._system_reset_tasks.clear()
 
         if self._stream_task and not self._stream_task.done():
             self._stream_task.cancel()
@@ -573,11 +638,36 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         is_suppressed = now < suppress_until
         return is_masked or is_suppressed
 
+    def _handle_system_event(
+        self, sensor_key: str, is_active: bool, is_pulse: bool = False
+    ) -> None:
+        """Handle system-level events (storage, login failure)."""
+        if sensor_key in self._system_reset_tasks:
+            self._system_reset_tasks.pop(sensor_key).cancel()
+
+        self.system_events[sensor_key] = is_active
+        self.async_set_updated_data(dict(self.data or {}))
+
+        if is_active and (is_pulse or sensor_key == "login_failure"):
+            self._system_reset_tasks[sensor_key] = self.hass.loop.call_later(
+                30.0,
+                self._handle_system_event,
+                sensor_key,
+                False,
+                False,
+            )
+
     def _handle_event(self, channel: int, sensor_key: str, is_active: bool) -> None:
         """Process and dispatch an event state change to Home Assistant listeners."""
         if self.data is None:
             self.data = {
-                ch: {"motion": False, "video_loss": False, "video_blind": False}
+                ch: {
+                    "motion": False,
+                    "video_loss": False,
+                    "video_blind": False,
+                    "cross_line": False,
+                    "cross_region": False,
+                }
                 for ch in self.selected_channels
             }
 
@@ -586,6 +676,8 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
                 "motion": False,
                 "video_loss": False,
                 "video_blind": False,
+                "cross_line": False,
+                "cross_region": False,
             }
 
         pulse_key = (channel, sensor_key)
@@ -615,6 +707,10 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         is_pulse: bool = False,
     ) -> None:
         """Callback invoked by the stream listener."""
+        if sensor_key in self.system_events:
+            self._handle_system_event(sensor_key, is_active, is_pulse)
+            return
+
         self._handle_event(channel, sensor_key, is_active)
         if is_pulse and is_active:
             pulse_key = (channel, sensor_key)
@@ -632,7 +728,14 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         filtered: dict[int, dict[str, bool]] = {}
         for ch in channels:
             ch_status = status.get(
-                ch, {"motion": False, "video_loss": False, "video_blind": False}
+                ch,
+                {
+                    "motion": False,
+                    "video_loss": False,
+                    "video_blind": False,
+                    "cross_line": False,
+                    "cross_region": False,
+                },
             )
             ch_dict = dict(ch_status)
             if self._is_video_blind_suppressed(ch):

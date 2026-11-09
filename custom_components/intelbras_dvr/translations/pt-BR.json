@@ -23,7 +23,11 @@
         "title": "Recursos dos Canais",
         "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras selecionadas ({cameras}).",
         "data": {
-          "features": "Recursos Ativados"
+          "features": "Recursos Ativados",
+          "monitor_users": "Monitorar Sessões de Usuários Conectados",
+          "monitor_storage": "Monitorar Diagnóstico e Integridade do HD",
+          "monitor_network": "Monitorar Interface de Rede e Velocidade",
+          "monitor_events": "Alertas Push em Tempo Real (Falha de HD e Invasão)"
         }
       },
       "reauth_confirm": {
@@ -73,7 +77,11 @@
         "title": "Recursos dos Canais",
         "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras configuradas.",
         "data": {
-          "features": "Recursos Ativados"
+          "features": "Recursos Ativados",
+          "monitor_users": "Monitorar Sessões de Usuários Conectados",
+          "monitor_storage": "Monitorar Diagnóstico e Integridade do HD",
+          "monitor_network": "Monitorar Interface de Rede e Velocidade",
+          "monitor_events": "Alertas Push em Tempo Real (Falha de HD e Invasão)"
         }
       }
     },
@@ -93,7 +101,9 @@
         "mask": "Interruptor de máscara de privacidade",
         "video_color": "Controles de imagem (brilho, contraste, etc.)",
         "ptz": "Controle PTZ (pan / tilt / zoom)",
-        "recording": "Interruptor de gravação contínua"
+        "recording": "Interruptor de gravação contínua",
+        "cross_line": "Sensor de linha virtual / tripwire (IVS)",
+        "cross_region": "Sensor de intrusão perimetral / cerca virtual (IVS)"
       }
     },
     "split_mode": {
@@ -158,6 +168,27 @@
       },
       "event_stream": {
         "name": "Stream de eventos em tempo real"
+      },
+      "cross_line": {
+        "name": "Linha virtual"
+      },
+      "cross_region": {
+        "name": "Cerca virtual"
+      },
+      "storage_failure": {
+        "name": "Falha de disco"
+      },
+      "storage_not_exist": {
+        "name": "Disco ausente"
+      },
+      "storage_low_space": {
+        "name": "Espaço em disco crítico"
+      },
+      "login_failure": {
+        "name": "Tentativa de login com falha"
+      },
+      "network_link": {
+        "name": "Cabo de rede conectado"
       }
     },
     "button": {
@@ -190,6 +221,9 @@
       },
       "ptz_zoom_out": {
         "name": "PTZ menos zoom"
+      },
+      "refresh_storage": {
+        "name": "Atualizar diagnóstico do HD"
       }
     },
     "camera": {
@@ -267,6 +301,18 @@
       },
       "consecutive_failures": {
         "name": "Falhas consecutivas de conexão"
+      },
+      "active_users": {
+        "name": "Usuários conectados"
+      },
+      "storage_status": {
+        "name": "Status do HD"
+      },
+      "network_speed": {
+        "name": "Velocidade da rede"
+      },
+      "system_time": {
+        "name": "Hora do DVR"
       }
     },
     "switch": {
@@ -496,6 +542,32 @@
         "preset": {
           "name": "Índice da Predefinição",
           "description": "Número da predefinição para posicionar (índice base 1)."
+        }
+      }
+    },
+    "get_logs": {
+      "name": "Consultar logs",
+      "description": "Consulta registros de auditoria e eventos do DVR.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Integração",
+          "description": "O ID da configuração do DVR (opcional se houver apenas um DVR)."
+        },
+        "log_type": {
+          "name": "Tipo de Log",
+          "description": "Categoria de logs para consultar (All, System, Config, Storage, Alarm, Record, Account, Clear)."
+        },
+        "count": {
+          "name": "Quantidade",
+          "description": "Número máximo de registros a retornar (1 a 100)."
+        },
+        "start_time": {
+          "name": "Data e Hora Inicial",
+          "description": "Horário inicial no formato AAAA-MM-DD HH:MM:SS (padrão: 24 horas atrás)."
+        },
+        "end_time": {
+          "name": "Data e Hora Final",
+          "description": "Horário final no formato AAAA-MM-DD HH:MM:SS (padrão: agora)."
         }
       }
     }

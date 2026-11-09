@@ -27,10 +27,13 @@ from .const import (
     DEV_VIDEO_INPUT_CGI,
     ENCODE_CGI,
     EVENT_MANAGER_CGI,
+    GLOBAL_CGI,
+    LOG_CGI,
     LOGIN_LOCKOUT_BACKOFF,
     LOGIN_LOCKOUT_MAX_BACKOFF,
     MAGICBOX_CGI,
     MEDIAFILEFIND_CGI,
+    NET_APP_CGI,
     PTZ_CGI,
     RECORD_MODE_SCHEDULE,
     RTSP_LIVE_PATH,
@@ -39,6 +42,7 @@ from .const import (
     SPLIT_CGI,
     STORAGE_CGI,
     UPGRADE_CGI,
+    USER_MANAGER_CGI,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -473,6 +477,51 @@ class IntelbrasClient:
         ptz_channels: list[int] = [ch for ch in ptz_res if ch in available_channels]
         return available_channels, ptz_channels, onvif_res
 
+    async def async_discover_system_capabilities(self) -> dict[str, bool]:
+        """Probe the DVR to determine which optional system monitoring features are supported."""
+        caps = {
+            "users": False,
+            "storage": False,
+            "network": False,
+            "logs": False,
+        }
+        try:
+            r = await self._get(f"{USER_MANAGER_CGI}?action=getActiveUserInfoAll")
+            if r.status_code == 200 and "users[" in r.text:
+                caps["users"] = True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("DVR active users probe failed: %s", exc)
+
+        try:
+            r = await self._get(f"{STORAGE_CGI}?action=factory.getPortInfo")
+            if r.status_code == 200 and "info." in r.text:
+                caps["storage"] = True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("DVR storage diagnostics probe failed: %s", exc)
+
+        try:
+            r = await self._get(f"{NET_APP_CGI}?action=getInterfaces")
+            if r.status_code == 200 and "netInterface[" in r.text:
+                caps["network"] = True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("DVR network interfaces probe failed: %s", exc)
+
+        try:
+            r = await self._get(
+                f"{LOG_CGI}?action=startFind&condition.Type=All&condition.StartTime=2026-01-01%2000:00:00&condition.EndTime=2026-01-01%2000:00:01"
+            )
+            if r.status_code == 200 and "token=" in r.text:
+                caps["logs"] = True
+                for line in r.text.splitlines():
+                    if line.startswith("token="):
+                        tok = line.split("=", 1)[1].strip()
+                        await self._get(f"{LOG_CGI}?action=stopFind&token={tok}")
+                        break
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("DVR logs query probe failed: %s", exc)
+
+        return caps
+
     async def get_monitor_caps(self) -> list[int]:
         """Discover supported preview split modes (e.g. [1, 4, 8, 9, 16]) from the DVR.
 
@@ -851,6 +900,223 @@ class IntelbrasClient:
                     k, v = line.strip().split("=", 1)
                     info[k.strip()] = v.strip()
         return info
+
+    async def get_storage_diagnostics(self) -> dict[str, Any]:
+        """Query storage device status, damaged disk indicators, and partitions."""
+        port_resp = await self._get(f"{STORAGE_CGI}?action=factory.getPortInfo")
+        dev_resp = await self._get(f"{STORAGE_CGI}?action=getDeviceAllInfo")
+
+        bad_count = 0
+        total_disks = 0
+        if port_resp.status_code == 200:
+            for line in port_resp.text.splitlines():
+                if line.startswith("info.Bad="):
+                    try:
+                        bad_count = int(line.split("=", 1)[1].strip())
+                    except ValueError:
+                        pass
+                elif line.startswith("info.Total="):
+                    try:
+                        total_disks = int(line.split("=", 1)[1].strip())
+                    except ValueError:
+                        pass
+
+        partitions: list[dict[str, Any]] = []
+        overall_state = "Unknown"
+        fs_error = False
+        total_bytes = 0.0
+        used_bytes = 0.0
+
+        if dev_resp.status_code == 200:
+            part_map: dict[int, dict[str, Any]] = {}
+            for line in dev_resp.text.splitlines():
+                line = line.strip()
+                if not line or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+                if k == "list.info[0].State":
+                    overall_state = v
+                elif k.startswith("list.info[0].Detail["):
+                    m = re.match(r"list\.info\[0\]\.Detail\[(\d+)\]\.(\w+)", k)
+                    if m:
+                        idx = int(m.group(1))
+                        attr = m.group(2)
+                        part = part_map.setdefault(idx, {})
+                        if attr == "IsError":
+                            is_err = v.lower() == "true"
+                            part["is_error"] = is_err
+                            if is_err:
+                                fs_error = True
+                        elif attr in ("TotalBytes", "UsedBytes"):
+                            try:
+                                val = float(v)
+                                part[attr.lower()] = val
+                                if attr == "TotalBytes":
+                                    total_bytes += val
+                                else:
+                                    used_bytes += val
+                            except ValueError:
+                                pass
+                        else:
+                            part[attr.lower()] = v
+            partitions = [part_map[i] for i in sorted(part_map.keys())]
+
+        usage_pct = round((used_bytes / total_bytes * 100), 1) if total_bytes > 0 else 0.0
+
+        return {
+            "bad_disk_count": bad_count,
+            "has_bad_disk": bad_count > 0,
+            "total_disks": total_disks,
+            "overall_state": overall_state,
+            "filesystem_error": fs_error,
+            "partitions": partitions,
+            "total_bytes": total_bytes,
+            "used_bytes": used_bytes,
+            "usage_percent": usage_pct,
+        }
+
+    async def get_active_users(self) -> list[dict[str, Any]]:
+        """Query active sessions logged into the DVR via userManager.cgi."""
+        resp = await self._get(f"{USER_MANAGER_CGI}?action=getActiveUserInfoAll")
+        if resp.status_code != 200:
+            return []
+
+        user_map: dict[int, dict[str, Any]] = {}
+        for line in resp.text.splitlines():
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            m = re.match(r"users\[(\d+)\]\.(\w+)", k.strip())
+            if m:
+                idx = int(m.group(1))
+                attr = m.group(2)
+                user_entry = user_map.setdefault(idx, {})
+                user_entry[attr] = v.strip()
+
+        sessions = []
+        for idx in sorted(user_map.keys()):
+            u = user_map[idx]
+            sessions.append({
+                "index": idx,
+                "user": u.get("Name", "unknown"),
+                "ip": u.get("ClientAddress", "unknown"),
+                "client_type": u.get("ClientType", "unknown"),
+                "login_time": u.get("LoginTime", ""),
+                "group": u.get("Group", ""),
+                "session_id": u.get("SessionNum", ""),
+            })
+        return sessions
+
+    async def get_network_interfaces(self) -> list[dict[str, Any]]:
+        """Query network interface status, link speed and MAC address via netApp.cgi."""
+        resp = await self._get(f"{NET_APP_CGI}?action=getInterfaces")
+        if resp.status_code != 200:
+            return []
+
+        net_map: dict[int, dict[str, Any]] = {}
+        for line in resp.text.splitlines():
+            line = line.strip()
+            if not line or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            m = re.match(r"netInterface\[(\d+)\]\.(\w+)", k.strip())
+            if m:
+                idx = int(m.group(1))
+                attr = m.group(2)
+                entry = net_map.setdefault(idx, {})
+                if attr == "Speed":
+                    try:
+                        entry["speed"] = int(v.strip())
+                    except ValueError:
+                        entry["speed"] = 0
+                elif attr == "ConnStatus":
+                    entry["connected"] = (v.strip().lower() == "connected")
+                    entry["status"] = v.strip()
+                elif attr == "PhysicalAddress":
+                    entry["mac_address"] = v.strip()
+                elif attr == "Name":
+                    entry["name"] = v.strip()
+                elif attr == "Type":
+                    entry["type"] = v.strip()
+
+        return [net_map[i] for i in sorted(net_map.keys())]
+
+    async def get_system_time(self) -> str | None:
+        """Query the current date/time on the DVR clock via global.cgi."""
+        resp = await self._get(f"{GLOBAL_CGI}?action=getCurrentTime")
+        if resp.status_code == 200:
+            for line in resp.text.splitlines():
+                if line.startswith("result="):
+                    return line.split("=", 1)[1].strip()
+        return None
+
+    async def query_logs(
+        self,
+        log_type: str = "All",
+        count: int = 20,
+        start_time: str | None = None,
+        end_time: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query audit and event logs from the DVR via log.cgi."""
+        import datetime
+        now = datetime.datetime.now()
+        st = start_time or (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+        et = end_time or now.strftime("%Y-%m-%d %H:%M:%S")
+        count = min(max(1, count), 100)
+
+        r_start = await self._get(
+            f"{LOG_CGI}?action=startFind&condition.Type={log_type}&condition.StartTime={st}&condition.EndTime={et}"
+        )
+        if r_start.status_code != 200:
+            return []
+
+        token = None
+        for line in r_start.text.splitlines():
+            if line.startswith("token="):
+                token = line.split("=", 1)[1].strip()
+                break
+
+        if not token:
+            return []
+
+        logs: list[dict[str, Any]] = []
+        try:
+            r_find = await self._get(
+                f"{LOG_CGI}?action=doFind&token={token}&count={count}"
+            )
+            if r_find.status_code == 200:
+                item_map: dict[int, dict[str, str]] = {}
+                for line in r_find.text.splitlines():
+                    line = line.strip()
+                    if not line or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    m = re.match(r"items\[(\d+)\]\.(\w+)", k.strip())
+                    if m:
+                        idx = int(m.group(1))
+                        attr = m.group(2)
+                        item = item_map.setdefault(idx, {})
+                        item[attr] = v.strip()
+
+                for idx in sorted(item_map.keys()):
+                    it = item_map[idx]
+                    logs.append({
+                        "index": idx,
+                        "time": it.get("Time", ""),
+                        "type": it.get("Type", ""),
+                        "user": it.get("User", ""),
+                        "detail": it.get("Detail", ""),
+                    })
+        finally:
+            try:
+                await self._get(f"{LOG_CGI}?action=stopFind&token={token}")
+            except Exception:  # noqa: BLE001
+                pass
+
+        return logs
 
     # ------------------------------------------------------------------
     # Monitor / Split output
@@ -1318,15 +1584,23 @@ class IntelbrasClient:
     # ------------------------------------------------------------------
 
     async def get_event_status(self, channels: list[int]) -> dict[int, dict[str, bool]]:
-        """Check active alarms (Motion, VideoLoss, VideoBlind) via getEventIndexes."""
+        """Check active alarms (Motion, VideoLoss, VideoBlind, IVS) via getEventIndexes."""
         status: dict[int, dict[str, bool]] = {
-            ch: {"motion": False, "video_loss": False, "video_blind": False}
+            ch: {
+                "motion": False,
+                "video_loss": False,
+                "video_blind": False,
+                "cross_line": False,
+                "cross_region": False,
+            }
             for ch in channels
         }
         event_types = {
             "VideoMotion": "motion",
             "VideoLoss": "video_loss",
             "VideoBlind": "video_blind",
+            "CrossLineDetection": "cross_line",
+            "CrossRegionDetection": "cross_region",
         }
         for cgi_code, sensor_key in event_types.items():
             try:
@@ -1378,6 +1652,12 @@ class IntelbrasClient:
                 "SmartMotionVehicle",
                 "VideoLoss",
                 "VideoBlind",
+                "CrossLineDetection",
+                "CrossRegionDetection",
+                "StorageNotExist",
+                "StorageFailure",
+                "StorageLowSpace",
+                "LoginFailureAlarm",
             ]
 
         codes_param = f"[{','.join(codes)}]"
@@ -1396,6 +1676,12 @@ class IntelbrasClient:
             "SmartMotionVehicle": "motion",
             "VideoLoss": "video_loss",
             "VideoBlind": "video_blind",
+            "CrossLineDetection": "cross_line",
+            "CrossRegionDetection": "cross_region",
+            "StorageNotExist": "storage_not_exist",
+            "StorageFailure": "storage_failure",
+            "StorageLowSpace": "storage_low_space",
+            "LoginFailureAlarm": "login_failure",
         }
 
         remaining = self.auth_lockout_remaining
