@@ -6,7 +6,7 @@ from enum import StrEnum
 from homeassistant.const import Platform
 
 DOMAIN = "intelbras_dvr"
-INTEGRATION_VERSION = "0.6.0"
+INTEGRATION_VERSION = "0.6.1"
 
 # ---------------------------------------------------------------------------
 # Configuration keys
@@ -133,6 +133,14 @@ SERVICE_GET_LOGS = "get_logs"
 
 # Features that are only offered when PTZ is auto-detected for a channel
 PTZ_ONLY_FEATURES: frozenset[str] = frozenset({CameraFeature.PTZ})
+
+# System-level features offered in config/options flow
+SYSTEM_FEATURES: frozenset[str] = frozenset({
+    CONF_MONITOR_USERS,
+    CONF_MONITOR_STORAGE,
+    CONF_MONITOR_NETWORK,
+    CONF_MONITOR_EVENTS,
+})
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,

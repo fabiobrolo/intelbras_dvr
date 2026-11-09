@@ -43,6 +43,7 @@ from .const import (
     DEFAULT_RTSP_PORT,
     DOMAIN,
     PTZ_ONLY_FEATURES,
+    SYSTEM_FEATURES,
     CameraFeature,
 )
 from .dvr import DVRAuthError, DVRConnectionError, IntelbrasClient
@@ -204,6 +205,7 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             enabled: list[str] = user_input.get(CONF_FEATURES) or []
+            camera_features = [f for f in enabled if f not in SYSTEM_FEATURES]
             return self.async_create_entry(
                 title=self._title,
                 data={
@@ -220,9 +222,9 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                     ],
                     CONF_FEATURES: {
                         str(ch): (
-                            enabled
+                            camera_features
                             if ch in self._ptz_channels
-                            else [f for f in enabled if f != CameraFeature.PTZ]
+                            else [f for f in camera_features if f != CameraFeature.PTZ]
                         )
                         for ch in self._selected_channels
                     },
@@ -230,15 +232,15 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                         str(ch): name
                         for ch, name in self._available_channels.items()
                     },
-                    CONF_MONITOR_USERS: user_input.get(CONF_MONITOR_USERS, True),
-                    CONF_MONITOR_STORAGE: user_input.get(CONF_MONITOR_STORAGE, True),
-                    CONF_MONITOR_NETWORK: user_input.get(CONF_MONITOR_NETWORK, True),
-                    CONF_MONITOR_EVENTS: user_input.get(CONF_MONITOR_EVENTS, True),
+                    CONF_MONITOR_USERS: CONF_MONITOR_USERS in enabled,
+                    CONF_MONITOR_STORAGE: CONF_MONITOR_STORAGE in enabled,
+                    CONF_MONITOR_NETWORK: CONF_MONITOR_NETWORK in enabled,
+                    CONF_MONITOR_EVENTS: CONF_MONITOR_EVENTS in enabled,
                 },
             )
 
-        default_features = _default_features(has_ptz)
-        feature_options = _feature_options(has_ptz)
+        default_features = _default_features(has_ptz, self._system_caps)
+        feature_options = _feature_options(has_ptz, self._system_caps)
 
         schema_dict: dict[Any, Any] = {
             vol.Optional(
@@ -252,13 +254,6 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             ),
         }
-        if self._system_caps.get("users", True):
-            schema_dict[vol.Optional(CONF_MONITOR_USERS, default=True)] = bool
-        if self._system_caps.get("storage", True):
-            schema_dict[vol.Optional(CONF_MONITOR_STORAGE, default=True)] = bool
-        if self._system_caps.get("network", True):
-            schema_dict[vol.Optional(CONF_MONITOR_NETWORK, default=True)] = bool
-        schema_dict[vol.Optional(CONF_MONITOR_EVENTS, default=True)] = bool
 
         return self.async_show_form(
             step_id="features",
@@ -550,14 +545,15 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
 
         if user_input is not None:
             enabled: list[str] = user_input.get(CONF_FEATURES) or []
+            camera_features = [f for f in enabled if f not in SYSTEM_FEATURES]
             current_features: dict[str, list[str]] = dict(
                 self.config_entry.data.get(CONF_FEATURES, {})
             )
             for ch in self._selected_channels:
                 current_features[str(ch)] = (
-                    enabled
+                    camera_features
                     if ch in self._ptz_channels
-                    else [f for f in enabled if f != CameraFeature.PTZ]
+                    else [f for f in camera_features if f != CameraFeature.PTZ]
                 )
             for key in list(current_features):
                 if int(key) not in self._selected_channels:
@@ -623,18 +619,10 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
                     str(ch): name
                     for ch, name in self._available_channels.items()
                 },
-                CONF_MONITOR_USERS: user_input.get(
-                    CONF_MONITOR_USERS, self.config_entry.data.get(CONF_MONITOR_USERS, True)
-                ),
-                CONF_MONITOR_STORAGE: user_input.get(
-                    CONF_MONITOR_STORAGE, self.config_entry.data.get(CONF_MONITOR_STORAGE, True)
-                ),
-                CONF_MONITOR_NETWORK: user_input.get(
-                    CONF_MONITOR_NETWORK, self.config_entry.data.get(CONF_MONITOR_NETWORK, True)
-                ),
-                CONF_MONITOR_EVENTS: user_input.get(
-                    CONF_MONITOR_EVENTS, self.config_entry.data.get(CONF_MONITOR_EVENTS, True)
-                ),
+                CONF_MONITOR_USERS: CONF_MONITOR_USERS in enabled,
+                CONF_MONITOR_STORAGE: CONF_MONITOR_STORAGE in enabled,
+                CONF_MONITOR_NETWORK: CONF_MONITOR_NETWORK in enabled,
+                CONF_MONITOR_EVENTS: CONF_MONITOR_EVENTS in enabled,
             }
             if self.hass.config_entries.async_update_entry(
                 self.config_entry, data=updated_data
@@ -668,47 +656,35 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
                 if any(str(ch) not in stored_features for ch in ptz_selected):
                     current_enabled.append(CameraFeature.PTZ)
         else:
-            current_enabled = _default_features(has_ptz)
+            current_enabled = [
+                f
+                for f in ALL_CAMERA_FEATURES
+                if f not in PTZ_ONLY_FEATURES
+            ]
+            if has_ptz:
+                current_enabled.append(CameraFeature.PTZ)
+
+        if self.config_entry.data.get(CONF_MONITOR_USERS, True) and self._system_caps.get("users", True):
+            current_enabled.append(CONF_MONITOR_USERS)
+        if self.config_entry.data.get(CONF_MONITOR_STORAGE, True) and self._system_caps.get("storage", True):
+            current_enabled.append(CONF_MONITOR_STORAGE)
+        if self.config_entry.data.get(CONF_MONITOR_NETWORK, True) and self._system_caps.get("network", True):
+            current_enabled.append(CONF_MONITOR_NETWORK)
+        if self.config_entry.data.get(CONF_MONITOR_EVENTS, True):
+            current_enabled.append(CONF_MONITOR_EVENTS)
 
         options_schema: dict[Any, Any] = {
             vol.Optional(
                 CONF_FEATURES, default=current_enabled
             ): SelectSelector(
                 SelectSelectorConfig(
-                    options=_feature_options(has_ptz),
+                    options=_feature_options(has_ptz, self._system_caps),
                     translation_key="features",
                     multiple=True,
                     mode=SelectSelectorMode.LIST,
                 )
             ),
         }
-        if self._system_caps.get("users", True):
-            options_schema[
-                vol.Optional(
-                    CONF_MONITOR_USERS,
-                    default=self.config_entry.data.get(CONF_MONITOR_USERS, True),
-                )
-            ] = bool
-        if self._system_caps.get("storage", True):
-            options_schema[
-                vol.Optional(
-                    CONF_MONITOR_STORAGE,
-                    default=self.config_entry.data.get(CONF_MONITOR_STORAGE, True),
-                )
-            ] = bool
-        if self._system_caps.get("network", True):
-            options_schema[
-                vol.Optional(
-                    CONF_MONITOR_NETWORK,
-                    default=self.config_entry.data.get(CONF_MONITOR_NETWORK, True),
-                )
-            ] = bool
-        options_schema[
-            vol.Optional(
-                CONF_MONITOR_EVENTS,
-                default=self.config_entry.data.get(CONF_MONITOR_EVENTS, True),
-            )
-        ] = bool
 
         return self.async_show_form(
             step_id="features",
@@ -745,18 +721,39 @@ def _channel_options(
     return result
 
 
-def _feature_options(has_ptz: bool) -> list[str]:
+def _feature_options(
+    has_ptz: bool, system_caps: dict[str, bool] | None = None
+) -> list[str]:
     """Build the SelectSelector options list for feature selection using translation keys."""
-    return [
+    caps = system_caps or {}
+    options = [
         f
         for f in ALL_CAMERA_FEATURES
         if f != CameraFeature.PTZ or has_ptz
     ]
+    if caps.get("users", True):
+        options.append(CONF_MONITOR_USERS)
+    if caps.get("storage", True):
+        options.append(CONF_MONITOR_STORAGE)
+    if caps.get("network", True):
+        options.append(CONF_MONITOR_NETWORK)
+    options.append(CONF_MONITOR_EVENTS)
+    return options
 
 
-def _default_features(has_ptz: bool) -> list[str]:
+def _default_features(
+    has_ptz: bool, system_caps: dict[str, bool] | None = None
+) -> list[str]:
     """Return the default set of features to pre-select."""
+    caps = system_caps or {}
     defaults = [f for f in ALL_CAMERA_FEATURES if f not in PTZ_ONLY_FEATURES]
     if has_ptz:
         defaults.append(CameraFeature.PTZ)
+    if caps.get("users", True):
+        defaults.append(CONF_MONITOR_USERS)
+    if caps.get("storage", True):
+        defaults.append(CONF_MONITOR_STORAGE)
+    if caps.get("network", True):
+        defaults.append(CONF_MONITOR_NETWORK)
+    defaults.append(CONF_MONITOR_EVENTS)
     return defaults

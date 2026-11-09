@@ -20,14 +20,10 @@
         }
       },
       "features": {
-        "title": "Recursos dos Canais",
-        "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras selecionadas ({cameras}).",
+        "title": "Recursos dos Canais e do Sistema",
+        "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras selecionadas ({cameras}) e opções de monitoramento do sistema.",
         "data": {
-          "features": "Recursos Ativados",
-          "monitor_users": "Monitorar Sessões de Usuários Conectados",
-          "monitor_storage": "Monitorar Diagnóstico e Integridade do HD",
-          "monitor_network": "Monitorar Interface de Rede e Velocidade",
-          "monitor_events": "Alertas Push em Tempo Real (Falha de HD e Invasão)"
+          "features": "Recursos Ativados"
         }
       },
       "reauth_confirm": {
@@ -74,14 +70,10 @@
         }
       },
       "features": {
-        "title": "Recursos dos Canais",
-        "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras configuradas.",
+        "title": "Recursos dos Canais e do Sistema",
+        "description": "Selecione os recursos e plataformas de entidades a ativar para as câmeras configuradas e opções de monitoramento do sistema.",
         "data": {
-          "features": "Recursos Ativados",
-          "monitor_users": "Monitorar Sessões de Usuários Conectados",
-          "monitor_storage": "Monitorar Diagnóstico e Integridade do HD",
-          "monitor_network": "Monitorar Interface de Rede e Velocidade",
-          "monitor_events": "Alertas Push em Tempo Real (Falha de HD e Invasão)"
+          "features": "Recursos Ativados"
         }
       }
     },
@@ -103,7 +95,11 @@
         "ptz": "Controle PTZ (pan / tilt / zoom)",
         "recording": "Interruptor de gravação contínua",
         "cross_line": "Sensor de linha virtual / tripwire (IVS)",
-        "cross_region": "Sensor de intrusão perimetral / cerca virtual (IVS)"
+        "cross_region": "Sensor de intrusão perimetral / cerca virtual (IVS)",
+        "monitor_users": "Monitorar Sessões de Usuários Conectados",
+        "monitor_storage": "Monitorar Diagnóstico e Integridade do HD",
+        "monitor_network": "Monitorar Interface de Rede e Velocidade",
+        "monitor_events": "Alertas Push em Tempo Real (Falha de HD e Invasão)"
       }
     },
     "split_mode": {

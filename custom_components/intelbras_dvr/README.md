@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.6.0-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.6.1-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)

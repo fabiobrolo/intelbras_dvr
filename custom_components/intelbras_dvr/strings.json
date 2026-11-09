@@ -20,14 +20,10 @@
         }
       },
       "features": {
-        "title": "Channel Features",
-        "description": "Select the features and entity platforms to enable for the selected cameras ({cameras}).",
+        "title": "Channel & System Features",
+        "description": "Select the features and entity platforms to enable for the selected cameras ({cameras}) and system monitoring options.",
         "data": {
-          "features": "Enabled Features",
-          "monitor_users": "Monitor Active User Sessions",
-          "monitor_storage": "Monitor Storage & HDD Health Diagnostics",
-          "monitor_network": "Monitor Network Interface & Link Speed",
-          "monitor_events": "Real-time Push Alerts (Storage & Login Failure)"
+          "features": "Enabled Features"
         }
       },
       "reauth_confirm": {
@@ -74,14 +70,10 @@
         }
       },
       "features": {
-        "title": "Channel Features",
-        "description": "Select the features and entity platforms to enable for the configured cameras.",
+        "title": "Channel & System Features",
+        "description": "Select the features and entity platforms to enable for the configured cameras and system monitoring options.",
         "data": {
-          "features": "Enabled Features",
-          "monitor_users": "Monitor Active User Sessions",
-          "monitor_storage": "Monitor Storage & HDD Health Diagnostics",
-          "monitor_network": "Monitor Network Interface & Link Speed",
-          "monitor_events": "Real-time Push Alerts (Storage & Login Failure)"
+          "features": "Enabled Features"
         }
       }
     },
@@ -103,7 +95,11 @@
         "ptz": "PTZ control (pan / tilt / zoom)",
         "recording": "Continuous recording switch",
         "cross_line": "Tripwire detection sensor (IVS)",
-        "cross_region": "Perimeter intrusion sensor (IVS)"
+        "cross_region": "Perimeter intrusion sensor (IVS)",
+        "monitor_users": "Monitor Active User Sessions",
+        "monitor_storage": "Monitor Storage & HDD Health Diagnostics",
+        "monitor_network": "Monitor Network Interface & Link Speed",
+        "monitor_events": "Real-time Push Alerts (Storage & Login Failure)"
       }
     },
     "split_mode": {
