@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import functools
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
@@ -14,7 +17,7 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers import (
     device_registry as dr,
@@ -240,7 +243,7 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         default_features = _default_features(has_ptz, self._system_caps)
-        feature_options = _feature_options(has_ptz, self._system_caps)
+        feature_options = _feature_options(has_ptz, self._system_caps, self.hass)
 
         schema_dict: dict[Any, Any] = {
             vol.Optional(
@@ -678,7 +681,7 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
                 CONF_FEATURES, default=current_enabled
             ): SelectSelector(
                 SelectSelectorConfig(
-                    options=_feature_options(has_ptz, self._system_caps),
+                    options=_feature_options(has_ptz, self._system_caps, self.hass),
                     translation_key="features",
                     multiple=True,
                     mode=SelectSelectorMode.LIST,
@@ -721,24 +724,63 @@ def _channel_options(
     return result
 
 
+@functools.lru_cache(maxsize=8)
+def _load_translations(lang: str) -> dict[str, str]:
+    """Load selector feature options translation for a given language."""
+    base_dir = Path(__file__).parent / "translations"
+    candidates = [
+        base_dir / f"{lang}.json",
+        base_dir / f"{lang.split('-')[0]}.json" if "-" in lang else None,
+        base_dir / "en.json",
+        Path(__file__).parent / "strings.json",
+    ]
+    for p in candidates:
+        if p and p.is_file():
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = json.load(f)
+                    opts = (
+                        data.get("selector", {})
+                        .get("features", {})
+                        .get("options", {})
+                    )
+                    if opts:
+                        return opts
+            except Exception:
+                continue
+    return {}
+
+
 def _feature_options(
-    has_ptz: bool, system_caps: dict[str, bool] | None = None
-) -> list[str]:
-    """Build the SelectSelector options list for feature selection using translation keys."""
+    has_ptz: bool,
+    system_caps: dict[str, bool] | None = None,
+    hass: HomeAssistant | None = None,
+) -> list[SelectOptionDict]:
+    """Build the SelectSelector options list for feature selection with translated labels."""
     caps = system_caps or {}
-    options = [
+    lang = hass.config.language if hass and hasattr(hass, "config") else "pt-BR"
+    translations = _load_translations(lang)
+
+    keys = [
         f
         for f in ALL_CAMERA_FEATURES
         if f != CameraFeature.PTZ or has_ptz
     ]
     if caps.get("users", True):
-        options.append(CONF_MONITOR_USERS)
+        keys.append(CONF_MONITOR_USERS)
     if caps.get("storage", True):
-        options.append(CONF_MONITOR_STORAGE)
+        keys.append(CONF_MONITOR_STORAGE)
     if caps.get("network", True):
-        options.append(CONF_MONITOR_NETWORK)
-    options.append(CONF_MONITOR_EVENTS)
-    return options
+        keys.append(CONF_MONITOR_NETWORK)
+    keys.append(CONF_MONITOR_EVENTS)
+
+    return [
+        SelectOptionDict(
+            value=k,
+            label=translations.get(k, k),
+        )
+        for k in keys
+    ]
 
 
 def _default_features(

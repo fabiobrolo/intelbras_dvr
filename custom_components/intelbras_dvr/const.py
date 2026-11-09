@@ -6,7 +6,7 @@ from enum import StrEnum
 from homeassistant.const import Platform
 
 DOMAIN = "intelbras_dvr"
-INTEGRATION_VERSION = "0.6.1"
+INTEGRATION_VERSION = "0.6.2"
 
 # ---------------------------------------------------------------------------
 # Configuration keys

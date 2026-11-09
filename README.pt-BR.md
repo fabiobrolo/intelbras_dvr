@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.6.1-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.6.2-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -22,6 +22,8 @@ Desenvolvida seguindo os padrões arquiteturais modernos do Home Assistant (HA 2
 
 ## 🛡️ Diagnósticos Avançados do Sistema, Segurança e IA Perimetral IVS (v0.6.0)
 
+* **Rótulos Traduzidos Explícitos no Config e Options Flow (v0.6.2):** Substituição de seletores de strings cruas por dicionários `SelectOptionDict` diretamente localizados a partir dos arquivos de tradução do backend, garantindo que todas as opções de recursos e diagnósticos do sistema sempre sejam exibidas traduzidas em uma lista compacta sem espaçamentos excessivos.
+* **Layout Compacto e Unificado em Checklist (v0.6.1):** Agrupamento das opções de diagnóstico do sistema no seletor unificado de recursos (`features`), eliminando linhas espaçadas e proporcionando uma experiência de configuração padronizada.
 * **Monitoramento de Sessões e Usuários Conectados (`userManager.cgi`):** Acompanhamento em tempo real de conexões ativas, tipo de cliente (`Web3.0`, `Dahua3.0`, aplicativos móveis), endereço IP de origem e horário de login via `sensor.dvr_intelbras_usuarios_conectados`.
 * **Integridade do HD e Diagnóstico de Partições (`storageDevice.cgi`):** Sensor binário de falha física no barramento IDE/SATA (`binary_sensor.dvr_intelbras_falha_de_disco`), verificação de erros no sistema de arquivos em todas as partições e botão de atualização de diagnóstico sob demanda (`button.dvr_intelbras_atualizar_diagnostico_do_hd`).
 * **Eventos Push em Tempo Real do Sistema (`eventManager.cgi?action=attach`):** Alertas instantâneos (sem polling) para `StorageFailure` (falha de leitura/gravação/I/O no HD), `StorageNotExist` (disco ausente ou desconectado), `StorageLowSpace` (espaço crítico em disco) e `LoginFailureAlarm` (tentativas repetidas de invasão/força bruta).

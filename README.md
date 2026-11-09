@@ -5,7 +5,7 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.6.1-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
+[![Version](https://img.shields.io/badge/version-0.6.2-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
@@ -22,6 +22,8 @@ Designed following modern Home Assistant Platinum-tier architectural standards (
 
 ## 🛡️ Deep System Diagnostics, Security & IVS AI Analytics (v0.6.0)
 
+* **Explicit Translated Labels in Config & Options Flows (v0.6.2):** Replaced raw string selectors with dynamically localized `SelectOptionDict` mappings across config and options flows, guaranteeing all camera and system monitoring toggles display fully localized labels in a compact checklist with zero vertical gaps.
+* **Compact Unified Checklist Layout (v0.6.1):** Merged system diagnostics options into the main `features` selector, eliminating excessive vertical form spacing and providing a cohesive setup experience.
 * **Active User Sessions (`userManager.cgi`):** Monitor real-time connected sessions, clients (`Web3.0`, `Dahua3.0`, mobile apps), IP addresses, and login times via `sensor.dvr_intelbras_active_users`.
 * **HDD Health & Partition Diagnostics (`storageDevice.cgi`):** Hardware IDE/SATA damaged disk fault detector (`binary_sensor.dvr_intelbras_storage_failure`), filesystem corruption checks across all partitions, partition health table attributes, and on-demand refresh button (`button.dvr_intelbras_refresh_storage`).
 * **Real-Time Push Storage & Security Events (`eventManager.cgi?action=attach`):** Instant alerts for `StorageFailure` (HDD I/O or bad sectors), `StorageNotExist` (missing disk), `StorageLowSpace` (disk nearly full), and `LoginFailureAlarm` (brute force attack).
