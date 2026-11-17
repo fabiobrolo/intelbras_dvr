@@ -121,6 +121,8 @@ class CameraFeature(StrEnum):
     VIDEO_BLIND = "video_blind"
     MASK = "mask"
     VIDEO_COLOR = "video_color"
+    PROFILES = "profiles"  # Image profiles, lighting compensation, and image periods
+    OVERLAY = "overlay"  # Dynamic channel title, text overlay, and time overlay
     PTZ = "ptz"
     RECORDING = "recording"  # manual recording switch
     CROSS_LINE = "cross_line"  # IVS Tripwire detection
@@ -150,5 +152,7 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
+    Platform.TEXT,
+    Platform.TIME,
     Platform.UPDATE,
 ]

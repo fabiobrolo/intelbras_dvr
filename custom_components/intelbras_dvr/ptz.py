@@ -4,10 +4,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import logging
+from typing import Any
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import PTZ_MOVE_DURATION
 from .coordinator import IntelbrasCoordinator
@@ -117,7 +119,7 @@ class PTZDirectionButton(CameraChannelEntity, ButtonEntity):
             self._stop_task = asyncio.create_task(_delayed_stop())
 
 
-class PTZPresetSelect(CameraChannelEntity, SelectEntity):
+class PTZPresetSelect(CameraChannelEntity, SelectEntity, RestoreEntity):
     """Select entity that lists saved PTZ presets for a channel.
 
     Changing the selection instantly moves the camera to the chosen preset.
@@ -136,6 +138,13 @@ class PTZPresetSelect(CameraChannelEntity, SelectEntity):
         super().__init__(coordinator, entry, channel, channel_name)
         self._attr_unique_id = f"{entry.entry_id}_ch{channel}_ptz_preset"
         self._current_option: str | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore previous selected preset on startup."""
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state in self.options:
+            self._current_option = last_state.state
 
     @property
     def _presets(self) -> dict[int, str]:
@@ -156,11 +165,37 @@ class PTZPresetSelect(CameraChannelEntity, SelectEntity):
     @property
     def current_option(self) -> str | None:
         """Return the currently selected preset option."""
+        # 1. If camera hardware reports an active preset_id (e.g. Dahua native PTZ)
+        ptz_status = self.coordinator.get_ptz_status(self._channel)
+        preset_id = ptz_status.get("preset_id")
+        if preset_id is not None and preset_id > 0:
+            for opt in self.options:
+                if opt.startswith(f"{preset_id}:"):
+                    return opt
+
+        # 2. Return last commanded preset (or restored from previous session)
         if self._current_option in self.options:
             return self._current_option
-        if self.options:
-            return self.options[0]
+
+        # 3. Return None if position/preset is unconfirmed
         return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return PTZ coordinates and status attributes."""
+        status = self.coordinator.get_ptz_status(self._channel)
+        attrs: dict[str, Any] = {}
+        if "pan" in status:
+            attrs["pan"] = status["pan"]
+        if "tilt" in status:
+            attrs["tilt"] = status["tilt"]
+        if "zoom" in status:
+            attrs["zoom"] = status["zoom"]
+        if "move_status" in status:
+            attrs["move_status"] = status["move_status"]
+        if "zoom_status" in status:
+            attrs["zoom_status"] = status["zoom_status"]
+        return attrs
 
     async def async_select_option(self, option: str) -> None:
         """Move the camera to the selected preset."""

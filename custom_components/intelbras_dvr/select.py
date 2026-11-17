@@ -7,6 +7,7 @@ import math
 from typing import TYPE_CHECKING
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -40,6 +41,73 @@ RECORD_MODE_DESCRIPTION = SelectEntityDescription(
     translation_key="record_mode",
     icon="mdi:record-rec",
     options=RECORD_MODE_OPTIONS,
+)
+
+DAY_NIGHT_OPTIONS: list[str] = ["black_white", "color", "schedule"]
+
+DAY_NIGHT_DESCRIPTION = SelectEntityDescription(
+    key="day_night_mode",
+    translation_key="day_night_mode",
+    icon="mdi:theme-light-dark",
+    options=DAY_NIGHT_OPTIONS,
+    entity_category=EntityCategory.CONFIG,
+)
+
+PROFILE_MODE_OPTIONS: list[str] = ["regular", "fixed", "schedule", "day_night"]
+
+PROFILE_MODE_DESCRIPTION = SelectEntityDescription(
+    key="profile_mode",
+    translation_key="profile_mode",
+    icon="mdi:calendar-clock",
+    options=PROFILE_MODE_OPTIONS,
+    entity_category=EntityCategory.CONFIG,
+)
+
+FIXED_PROFILE_OPTIONS: list[str] = ["day", "night"]
+
+FIXED_PROFILE_DESCRIPTION = SelectEntityDescription(
+    key="fixed_profile",
+    translation_key="fixed_profile",
+    icon="mdi:weather-sunset",
+    options=FIXED_PROFILE_OPTIONS,
+    entity_category=EntityCategory.CONFIG,
+)
+
+SCENE_MODE_OPTIONS: list[str] = ["standard", "soft", "vivid"]
+
+SCENE_MODE_DESCRIPTION = SelectEntityDescription(
+    key="scene_mode",
+    translation_key="scene_mode",
+    icon="mdi:palette-outline",
+    options=SCENE_MODE_OPTIONS,
+    entity_category=EntityCategory.CONFIG,
+)
+
+LIGHT_COMPENSATION_DESCRIPTION = SelectEntityDescription(
+    key="light_compensation_mode",
+    translation_key="light_compensation_mode",
+    icon="mdi:brightness-auto",
+    entity_category=EntityCategory.CONFIG,
+)
+
+PERIOD_CONFIG_OPTIONS: list[str] = ["active", "period_1", "period_2"]
+
+PERIOD_CONFIG_DESCRIPTION = SelectEntityDescription(
+    key="period_config",
+    translation_key="period_config",
+    icon="mdi:calendar-sync",
+    options=PERIOD_CONFIG_OPTIONS,
+    entity_category=EntityCategory.CONFIG,
+)
+
+PROFILE_CONFIG_OPTIONS: list[str] = ["active", "day", "night", "regular"]
+
+PROFILE_CONFIG_DESCRIPTION = SelectEntityDescription(
+    key="profile_config",
+    translation_key="profile_config",
+    icon="mdi:palette-swatch-outline",
+    options=PROFILE_CONFIG_OPTIONS,
+    entity_category=EntityCategory.CONFIG,
 )
 
 RECORD_MODE_TO_DVR: dict[str, int] = {
@@ -86,6 +154,26 @@ async def async_setup_entry(
             entities.append(CameraRecordModeSelect(coordinator, entry, ch, name))
         if ch in ptz_channels and CameraFeature.PTZ in feats:
             entities.append(PTZPresetSelect(coordinator, entry, ch, name))
+
+        profiles_enabled = (
+            CameraFeature.PROFILES in feats
+            or (CameraFeature.PROFILES not in feats and CameraFeature.VIDEO_COLOR in feats)
+        )
+        if profiles_enabled:
+            if coordinator.supports_analog_period_config(ch):
+                entities.append(CameraAnalogPeriodConfigSelect(coordinator, entry, ch, name))
+            if coordinator.supports_ip_profile_config(ch):
+                entities.append(CameraIPProfileConfigSelect(coordinator, entry, ch, name))
+            if coordinator.supports_day_night(ch):
+                entities.append(CameraDayNightSelect(coordinator, entry, ch, name))
+            if coordinator.supports_profile_mode(ch):
+                entities.append(CameraProfileModeSelect(coordinator, entry, ch, name))
+            if coordinator.supports_fixed_profile(ch):
+                entities.append(CameraFixedProfileSelect(coordinator, entry, ch, name))
+            if coordinator.supports_scene_mode(ch):
+                entities.append(CameraSceneModeSelect(coordinator, entry, ch, name))
+            if coordinator.supports_light_compensation(ch):
+                entities.append(CameraLightCompensationSelect(coordinator, entry, ch, name))
 
     async_add_entities(entities)
 
@@ -312,3 +400,412 @@ class CameraRecordModeSelect(CameraChannelEntity, SelectEntity):
                 option,
                 self._channel,
             )
+
+
+class CameraDayNightSelect(CameraChannelEntity, SelectEntity):
+    """Select entity for camera Day/Night mode (Color, Auto, Black & White)."""
+
+    entity_description: SelectEntityDescription = DAY_NIGHT_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the Day/Night mode selector."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_day_night_mode"
+        self._optimistic_option: str | None = None
+
+    @property
+    def current_option(self) -> str:
+        """Return the current Day/Night mode."""
+        if self._optimistic_option is not None:
+            return self._optimistic_option
+        return self.coordinator.get_day_night_mode(self._channel)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return schedule and active profile metadata attributes."""
+        return self.coordinator.get_profile_mode_info(self._channel)
+
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._optimistic_option = None
+        super()._handle_coordinator_update()
+
+    async def async_select_option(self, option: str) -> None:
+        """Change Day/Night mode on the DVR."""
+        if option not in DAY_NIGHT_OPTIONS:
+            _LOGGER.warning("Unknown Day/Night option: %s", option)
+            return
+
+        self._optimistic_option = option
+        self.async_write_ha_state()
+
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        ok = await self.coordinator.client.set_day_night_mode(
+            self._channel, option, profile=prof
+        )
+        if ok:
+            mode_map = {"color": 0, "schedule": 1, "auto": 1, "black_white": 2}
+            val = mode_map.get(option, 1)
+            if self.coordinator.data:
+                vio = self.coordinator.data.setdefault("video_in_options", {})
+                ch_data = vio.setdefault(self._channel, {})
+                if prof == 1:
+                    ch_data["night_day_night_color"] = val
+                elif prof == 0:
+                    ch_data["normal_day_night_color"] = val
+                else:
+                    ch_data["day_night_color"] = val
+                if prof == self.coordinator.client.get_active_profile_index(self._channel):
+                    ch_data["day_night_color"] = val
+                    ch_data["day_night"] = val
+                self._optimistic_option = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+            await self.coordinator.async_refresh_video_color()
+            self.async_write_ha_state()
+        else:
+            self._optimistic_option = None
+            self.async_write_ha_state()
+            _LOGGER.error(
+                "Failed to set Day/Night mode to '%s' on channel %d",
+                option,
+                self._channel + 1,
+            )
+
+
+class CameraProfileModeSelect(CameraChannelEntity, SelectEntity):
+    """Select entity for camera profile management mode (Regular, Perfil Fixo, Agendamento, Dia/Noite)."""
+
+    entity_description: SelectEntityDescription = PROFILE_MODE_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the Profile mode selector."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_profile_mode"
+        self._optimistic_option: str | None = None
+
+    @property
+    def current_option(self) -> str:
+        """Return the current Profile mode."""
+        if self._optimistic_option is not None:
+            return self._optimistic_option
+        return self.coordinator.get_profile_mode(self._channel)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return schedule metadata attributes."""
+        return self.coordinator.get_profile_mode_info(self._channel)
+
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._optimistic_option = None
+        super()._handle_coordinator_update()
+
+    async def async_select_option(self, option: str) -> None:
+        """Change Profile mode on the DVR."""
+        if option not in PROFILE_MODE_OPTIONS:
+            _LOGGER.warning("Unknown Profile option: %s", option)
+            return
+
+        self._optimistic_option = option
+        self.async_write_ha_state()
+
+        fixed_sub = self.coordinator.get_fixed_profile(self._channel)
+        ok = await self.coordinator.client.set_ip_profile_mode(
+            self._channel, option, fixed_subprofile=fixed_sub
+        )
+        if ok:
+            mode_map = {"regular": 0, "day_night": 1, "schedule": 2, "fixed": (3 if fixed_sub == "night" else 0)}
+            val = mode_map.get(option, 0)
+            if self.coordinator.data:
+                vio = self.coordinator.data.setdefault("video_in_options", {})
+                ch_data = vio.setdefault(self._channel, {})
+                ch_data["switch_mode"] = val
+                self._optimistic_option = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+            await self.coordinator.async_request_refresh()
+        else:
+            self._optimistic_option = None
+            self.async_write_ha_state()
+            _LOGGER.error(
+                "Failed to set Profile mode to '%s' on channel %d",
+                option,
+                self._channel + 1,
+            )
+
+
+class CameraFixedProfileSelect(CameraChannelEntity, SelectEntity):
+    """Select entity for choosing fixed profile (Dia or Noite) on Intelbras IP cameras."""
+
+    entity_description: SelectEntityDescription = FIXED_PROFILE_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the Fixed Profile selector."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_fixed_profile"
+        self._optimistic_option: str | None = None
+
+    @property
+    def current_option(self) -> str:
+        """Return the current Fixed Profile (day or night)."""
+        if self._optimistic_option is not None:
+            return self._optimistic_option
+        return self.coordinator.get_fixed_profile(self._channel)
+
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._optimistic_option = None
+        super()._handle_coordinator_update()
+
+    async def async_select_option(self, option: str) -> None:
+        """Set fixed profile (day or night) on the DVR."""
+        if option not in FIXED_PROFILE_OPTIONS:
+            _LOGGER.warning("Unknown Fixed Profile option: %s", option)
+            return
+
+        self._optimistic_option = option
+        self.async_write_ha_state()
+
+        ok = await self.coordinator.client.set_ip_fixed_profile(self._channel, option)
+        if ok:
+            val = 3 if option == "night" else 0
+            if self.coordinator.data:
+                vio = self.coordinator.data.setdefault("video_in_options", {})
+                ch_data = vio.setdefault(self._channel, {})
+                ch_data["switch_mode"] = val
+                self._optimistic_option = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+            await self.coordinator.async_request_refresh()
+        else:
+            self._optimistic_option = None
+            self.async_write_ha_state()
+            _LOGGER.error(
+                "Failed to set Fixed Profile to '%s' on channel %d",
+                option,
+                self._channel + 1,
+            )
+
+
+class CameraSceneModeSelect(CameraChannelEntity, SelectEntity):
+    """Select entity for camera scene mode / picture style (Standard, Soft, Vivid)."""
+
+    entity_description: SelectEntityDescription = SCENE_MODE_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the Scene Mode / Picture Style selector."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_scene_mode"
+        self._optimistic_option: str | None = None
+
+    @property
+    def current_option(self) -> str:
+        """Return the current Scene Mode / Picture Style."""
+        if self._optimistic_option is not None:
+            return self._optimistic_option
+        return self.coordinator.get_scene_mode(self._channel)
+
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._optimistic_option = None
+        super()._handle_coordinator_update()
+
+    async def async_select_option(self, option: str) -> None:
+        """Change Scene Mode / Picture Style on the DVR."""
+        if option not in SCENE_MODE_OPTIONS:
+            _LOGGER.warning("Unknown Scene Mode option: %s", option)
+            return
+
+        self._optimistic_option = option
+        self.async_write_ha_state()
+
+        ok = await self.coordinator.client.set_picture_style(self._channel, option)
+        if ok:
+            if self.coordinator.data:
+                vc = self.coordinator.data.setdefault("video_color", {})
+                ch_data = vc.setdefault(self._channel, {})
+                ch_data["picture_style"] = option
+                self._optimistic_option = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+            await self.coordinator.async_request_refresh()
+        else:
+            self._optimistic_option = None
+            self.async_write_ha_state()
+            _LOGGER.error(
+                "Failed to set Scene Mode to '%s' on channel %d",
+                option,
+                self._channel + 1,
+            )
+
+
+class CameraLightCompensationSelect(CameraChannelEntity, SelectEntity):
+    """Select entity controlling light compensation mode (Disabled, BLC, HLC, WDR)."""
+
+    entity_description: SelectEntityDescription = LIGHT_COMPENSATION_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the light compensation mode select entity."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_light_compensation_mode"
+        self._optimistic_option: str | None = None
+        options = ["disabled"]
+        if coordinator.client.channel_supports_backlight(channel):
+            options.append("blc")
+        if coordinator.client.channel_supports_hlc(channel):
+            options.append("hlc")
+        if coordinator.client.channel_supports_wdr(channel):
+            options.append("wdr")
+        self._attr_options = options
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the current light compensation mode."""
+        if self._optimistic_option is not None:
+            return self._optimistic_option
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        mode = self.coordinator.client.get_light_compensation_mode(
+            self._channel, profile=prof
+        )
+        if mode in self.options:
+            return mode
+        return "disabled"
+
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._optimistic_option = None
+        super()._handle_coordinator_update()
+
+    async def async_select_option(self, option: str) -> None:
+        """Change the light compensation mode."""
+        if option not in self.options:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_light_compensation_mode",
+                translation_placeholders={
+                    "mode": option,
+                    "supported": ", ".join(self.options),
+                },
+            )
+
+        self._optimistic_option = option
+        self.async_write_ha_state()
+
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        ok = await self.coordinator.client.set_light_compensation_mode(
+            self._channel, option, profile=prof
+        )
+        if ok:
+            await self.coordinator.async_refresh_video_color()
+            self._optimistic_option = None
+            self.async_write_ha_state()
+        else:
+            self._optimistic_option = None
+            self.async_write_ha_state()
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="light_compensation_mode_failed",
+            )
+
+
+class CameraAnalogPeriodConfigSelect(CameraChannelEntity, SelectEntity):
+    """Select entity for choosing which period to view and edit (Active, Period 1, Period 2)."""
+
+    entity_description: SelectEntityDescription = PERIOD_CONFIG_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the analog period config selector."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_period_config"
+
+    @property
+    def current_option(self) -> str:
+        """Return the current selected period for configuration."""
+        return self.coordinator.get_selected_config_profile(self._channel)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return active period details."""
+        return {
+            "effective_profile_index": self.coordinator.get_effective_profile_index(self._channel),
+            **self.coordinator.get_analog_periods_info(self._channel),
+        }
+
+    async def async_select_option(self, option: str) -> None:
+        """Change selected configuration period."""
+        if option not in PERIOD_CONFIG_OPTIONS:
+            return
+        self.coordinator.set_selected_config_profile(self._channel, option)
+        self.async_write_ha_state()
+
+
+class CameraIPProfileConfigSelect(CameraChannelEntity, SelectEntity):
+    """Select entity for choosing which profile to view and edit (Active, Day, Night, Regular)."""
+
+    entity_description: SelectEntityDescription = PROFILE_CONFIG_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the IP profile config selector."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_profile_config"
+
+    @property
+    def current_option(self) -> str:
+        """Return the current selected profile for configuration."""
+        return self.coordinator.get_selected_config_profile(self._channel)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return active profile details."""
+        return {
+            "effective_profile_index": self.coordinator.get_effective_profile_index(self._channel),
+            **self.coordinator.get_profile_mode_info(self._channel),
+        }
+
+    async def async_select_option(self, option: str) -> None:
+        """Change selected configuration profile."""
+        if option not in PROFILE_CONFIG_OPTIONS:
+            return
+        self.coordinator.set_selected_config_profile(self._channel, option)
+        self.async_write_ha_state()
+
+

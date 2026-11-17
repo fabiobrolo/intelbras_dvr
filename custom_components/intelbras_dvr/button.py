@@ -231,9 +231,11 @@ class CameraResetDefaultsButton(CameraChannelEntity, ButtonEntity):
         if supports_acutance:
             defaults["Acutance"] = DEFAULT_VIDEO_COLOR["Acutance"]
 
+        prof = self.coordinator.get_effective_profile_index(self._channel)
         if self.coordinator.data and "video_color" in self.coordinator.data:
-            self.coordinator.data["video_color"][self._channel] = dict(defaults)
-            self.coordinator.async_update_listeners()
+            if prof == self.coordinator.client.get_active_profile_index(self._channel):
+                self.coordinator.data["video_color"][self._channel] = dict(defaults)
+                self.coordinator.async_update_listeners()
 
         ok = await self.coordinator.client.set_video_color(
             channel=self._channel,
@@ -242,7 +244,7 @@ class CameraResetDefaultsButton(CameraChannelEntity, ButtonEntity):
             hue=defaults["Hue"],
             saturation=defaults["Saturation"],
             acutance=defaults.get("Acutance"),
-            profile=None,
+            profile=prof,
         )
         await self.coordinator.async_refresh_video_color()
         if not ok:

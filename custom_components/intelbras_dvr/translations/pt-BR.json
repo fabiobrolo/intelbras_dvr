@@ -92,6 +92,8 @@
         "video_blind": "Sensor de mascaramento de vídeo",
         "mask": "Interruptor de máscara de privacidade",
         "video_color": "Controles de imagem (brilho, contraste, etc.)",
+        "profiles": "Perfis de Imagem e Compensação de Luz",
+        "overlay": "Sobreposição no Vídeo (Nome OSD, Data/Hora e Título)",
         "ptz": "Controle PTZ (pan / tilt / zoom)",
         "recording": "Interruptor de gravação contínua",
         "cross_line": "Sensor de linha virtual / tripwire (IVS)",
@@ -246,6 +248,15 @@
       "acutance": {
         "name": "Nitidez"
       },
+      "noise_reduction": {
+        "name": "Redução de ruído"
+      },
+      "image_enhancement": {
+        "name": "Realce de imagem"
+      },
+      "image_gain": {
+        "name": "Ganho de imagem"
+      },
       "snapshot_interval": {
         "name": "Taxa de atualização dos instantâneos"
       }
@@ -263,6 +274,64 @@
           "schedule": "Agendado",
           "manual": "Manual / Contínuo",
           "off": "Desativado"
+        }
+      },
+      "day_night_mode": {
+        "name": "Modo Dia/Noite",
+        "state": {
+          "black_white": "Preto e Branco",
+          "color": "Cor",
+          "schedule": "Agenda"
+        }
+      },
+      "profile_mode": {
+        "name": "Modo de perfil",
+        "state": {
+          "regular": "Regular",
+          "fixed": "Perfil Fixo",
+          "schedule": "Agendamento",
+          "day_night": "Dia/Noite"
+        }
+      },
+      "fixed_profile": {
+        "name": "Perfil fixo",
+        "state": {
+          "day": "Dia",
+          "night": "Noite"
+        }
+      },
+      "scene_mode": {
+        "name": "Modo de cena",
+        "state": {
+          "standard": "Padrão",
+          "soft": "Suave",
+          "vivid": "Vivo"
+        }
+      },
+      "light_compensation_mode": {
+        "name": "Modo de compensação de luz",
+        "state": {
+          "disabled": "Desabilitado",
+          "blc": "BLC (Compensação de Luz de Fundo)",
+          "hlc": "HLC (Compensação de Luz Forte)",
+          "wdr": "WDR (Ampla Faixa Dinâmica)"
+        }
+      },
+      "period_config": {
+        "name": "Período de configuração",
+        "state": {
+          "active": "Vigente (Tempo real)",
+          "period_1": "Período 1",
+          "period_2": "Período 2"
+        }
+      },
+      "profile_config": {
+        "name": "Perfil de configuração",
+        "state": {
+          "active": "Vigente (Tempo real)",
+          "day": "Dia",
+          "night": "Noite",
+          "regular": "Regular"
         }
       }
     },
@@ -314,11 +383,63 @@
     "switch": {
       "privacy_mask": {
         "name": "Máscara de privacidade"
+      },
+      "custom_title_overlay": {
+        "name": "Sobreposição de título personalizado"
+      },
+      "channel_title_overlay": {
+        "name": "Sobreposição do nome do canal"
+      },
+      "time_title_overlay": {
+        "name": "Sobreposição de data e hora"
+      },
+      "wide_dynamic_range": {
+        "name": "Amplo alcance dinâmico (WDR)"
+      },
+      "image_gain_auto": {
+        "name": "Ganho automático"
+      },
+      "auto_noise_reduction": {
+        "name": "Redução automática de ruído"
+      },
+      "period_1_active": {
+        "name": "Período 1 ativo"
+      },
+      "period_2_active": {
+        "name": "Período 2 ativo"
       }
     },
     "update": {
       "dvr_firmware_update": {
         "name": "Atualização de firmware"
+      }
+    },
+    "time": {
+      "day_start_time": {
+        "name": "Início do dia"
+      },
+      "day_end_time": {
+        "name": "Término do dia"
+      },
+      "period_1_start_time": {
+        "name": "Período 1 - Início"
+      },
+      "period_1_end_time": {
+        "name": "Período 1 - Término"
+      },
+      "period_2_start_time": {
+        "name": "Período 2 - Início"
+      },
+      "period_2_end_time": {
+        "name": "Período 2 - Término"
+      }
+    },
+    "text": {
+      "channel_title_text": {
+        "name": "Título da câmera"
+      },
+      "custom_title_text": {
+        "name": "Texto de título personalizado"
       }
     }
   },
@@ -364,6 +485,24 @@
     },
     "firmware_update_rejected": {
       "message": "O DVR não aceitou o comando de atualização online. Atualize manualmente em {url}."
+    },
+    "invalid_light_compensation_mode": {
+      "message": "Modo de compensação de luz '{mode}' inválido. Modos suportados: {supported}."
+    },
+    "light_compensation_mode_failed": {
+      "message": "Falha ao definir o modo de compensação de luz no DVR."
+    },
+    "noise_reduction_failed": {
+      "message": "Falha ao definir a redução de ruído no DVR."
+    },
+    "auto_noise_reduction_failed": {
+      "message": "Falha ao definir a redução automática de ruído no DVR."
+    },
+    "image_gain_failed": {
+      "message": "Falha ao definir o ganho de imagem no DVR."
+    },
+    "image_enhancement_failed": {
+      "message": "Falha ao definir o realce de imagem no DVR."
     }
   },
   "issues": {

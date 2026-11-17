@@ -5,8 +5,8 @@
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
-[![Version](https://img.shields.io/badge/version-0.6.2-blue.svg)](https://github.com/fabiobrolo/intelbras_dvr/releases)
 [![Home Assistant](https://img.shields.io/badge/home--assistant-2024.4%2B-brightgreen.svg)](https://www.home-assistant.io)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
 
@@ -14,167 +14,230 @@
 
 ---
 
-Integração personalizada de alta performance para o **Home Assistant** dedicada a DVRs e NVRs **Intelbras** (e equipamentos compatíveis baseados em Dahua) em conformidade com a especificação **API of HTTP Protocol Specification V3.35**. Comunicação 100% local através de APIs HTTP CGI (stream de eventos `local_push` + `DataUpdateCoordinator`) e fluxos de vídeo RTSP, com zero dependência de nuvem.
+Integração personalizada de alta performance para o **Home Assistant** dedicada a DVRs e NVRs **Intelbras** (e equipamentos compatíveis baseados em Dahua) em conformidade com a especificação **API of HTTP Protocol Specification V3.35**. Comunicação 100% local através de APIs HTTP CGI (stream de eventos push `local_push` + `DataUpdateCoordinator`) e fluxos de vídeo RTSP, com zero dependência de nuvem.
 
-Desenvolvida seguindo os padrões arquiteturais modernos do Home Assistant (HA 2024.4+ / 2026.x / Python 3.14), utilizando `ConfigEntry[IntelbrasDVRData]` (`runtime_data`), dataclasses `EntityDescription` em todas as plataformas, descoberta 100% dinâmica de hardware/canais/mosaicos de vídeo, fluxos nativos de Reautenticação (`reauth`) e Reconfiguração (`reconfigure`), localização completa em Português do Brasil e Inglês, execução assíncrona não bloqueante e reprodução de gravações diretamente no Navegador de Mídia com miniaturas de pré-visualização.
-
----
-
-## 🛡️ Diagnósticos Avançados do Sistema, Segurança e IA Perimetral IVS (v0.6.0)
-
-* **Rótulos Traduzidos Explícitos no Config e Options Flow (v0.6.2):** Substituição de seletores de strings cruas por dicionários `SelectOptionDict` diretamente localizados a partir dos arquivos de tradução do backend, garantindo que todas as opções de recursos e diagnósticos do sistema sempre sejam exibidas traduzidas em uma lista compacta sem espaçamentos excessivos.
-* **Layout Compacto e Unificado em Checklist (v0.6.1):** Agrupamento das opções de diagnóstico do sistema no seletor unificado de recursos (`features`), eliminando linhas espaçadas e proporcionando uma experiência de configuração padronizada.
-* **Monitoramento de Sessões e Usuários Conectados (`userManager.cgi`):** Acompanhamento em tempo real de conexões ativas, tipo de cliente (`Web3.0`, `Dahua3.0`, aplicativos móveis), endereço IP de origem e horário de login via `sensor.dvr_intelbras_usuarios_conectados`.
-* **Integridade do HD e Diagnóstico de Partições (`storageDevice.cgi`):** Sensor binário de falha física no barramento IDE/SATA (`binary_sensor.dvr_intelbras_falha_de_disco`), verificação de erros no sistema de arquivos em todas as partições e botão de atualização de diagnóstico sob demanda (`button.dvr_intelbras_atualizar_diagnostico_do_hd`).
-* **Eventos Push em Tempo Real do Sistema (`eventManager.cgi?action=attach`):** Alertas instantâneos (sem polling) para `StorageFailure` (falha de leitura/gravação/I/O no HD), `StorageNotExist` (disco ausente ou desconectado), `StorageLowSpace` (espaço crítico em disco) e `LoginFailureAlarm` (tentativas repetidas de invasão/força bruta).
-* **Inteligência Artificial de Vídeo (IVS):** Sensores binários em tempo real para `CrossLineDetection` (Linha Virtual / Tripwire) e `CrossRegionDetection` (Cerca Virtual / Intrusão de Área).
-* **Diagnóstico de Conectividade de Rede (`netApp.cgi`):** Sensor de velocidade do link (`Mbit/s`), endereço MAC e sensor binário de integridade do cabo de rede.
-* **Serviço de Consulta de Logs de Auditoria (`log.cgi`):** Novo serviço `intelbras_dvr.get_logs` que retorna registros de eventos e auditoria diretamente no Home Assistant.
-* **Descoberta 100% Dinâmica de Capacidades:** Os fluxos de Configuração e Opções detectam automaticamente quais recursos do sistema o equipamento suporta.
+Desenvolvida seguindo os padrões arquiteturais modernos do Home Assistant (HA 2024.4+ / 2026.x / Python 3.14), utilizando `ConfigEntry[IntelbrasDVRData]` tipado (`runtime_data`), dataclasses `EntityDescription` em todas as plataformas, descoberta 100% dinâmica de hardware/canais/mosaicos de vídeo, fluxos nativos de Reautenticação (`reauth`) e Reconfiguração (`reconfigure`), localização completa em Português do Brasil e Inglês, execução assíncrona não bloqueante no event loop, transcodificação dinâmica de áudio e reprodução de gravações diretamente no Navegador de Mídia com miniaturas de pré-visualização.
 
 ---
 
-## 🛡️ Resiliência e Estabilidade de Autenticação (v0.5.1)
+## 🌟 Recursos e Capacidades Principais
 
-* **Fila Serializada de Autenticação Digest e Autocorreção de `401` Transitório (`dvr.py`):** Substituição do pool concorrente de requisições HTTP por uma trava assíncrona (`_request_lock`), limpeza automática de cookies CGI após respostas e reinicialização da sessão Digest para uma nova tentativa limpa (`0,35s`) em falhas transitórias `HTTP 401` de *nonce*, evitando condições de corrida e bloqueios de IP/usuário no DVR.
-* **Recuperação Automática Sem Reautenticação Forçada (`coordinator.py`, `__init__.py`, `const.py`):** Substituição da interrupção permanente via `ConfigEntryAuthFailed` por `UpdateFailed` e `ConfigEntryNotReady` (`retry_after`), combinados com *cooldown* progressivo anti-bloqueio (`65s → 180s → 300s → 600s` em `LOGIN_LOCKOUT_MAX_BACKOFF`) e aviso não bloqueante em **Reparos** (`auth_retrying`), recuperando automaticamente sem exigir reautenticação manual.
-* **Período de Tolerância e Correção de Disponibilidade (`entity.py`):** Correção de `DVREntity.available` e `CameraChannelEntity.available` para manter o estado anterior durante até 2 falhas consecutivas na coleta, evitando falsos alertas de `unavailable` / `offline`.
-* **Backoff do Stream de Eventos e Limpeza de Depreciação (`coordinator.py`, `__init__.py`, `config_flow.py`):** Correção do backoff exponencial de reconexão no `IntelbrasEventCoordinator` (reiniciado apenas após conexão HTTP `200` confirmada), eliminação de consulta duplicada na inicialização, preservação das opções no `OptionsFlow` e remoção do callback obsoleto `add_update_listener` (eliminando o aviso de depreciação do Home Assistant `2026.12.0`).
+### 📹 Streaming de Vídeo e Motor de Reprodução Adaptativo
+* **Fluxos RTSP Duplos:** Stream Principal de alta resolução (`subtype=0`) e Stream Secundário de baixo consumo de banda (`subtype=1`) por canal.
+* **Instantâneos Inteligentes:** Entidades de câmera do tipo snapshot com intervalo configurável, cache local e captura ultra-rápida via CGI/FFmpeg.
+* **Áudio Híbrido Adaptativo (go2rtc):** Canais que possuem áudio (ex.: videoporteiros, câmeras com microfone embutido ou áudio coaxial HDCVI) registram-se dinamicamente sob demanda no `go2rtc` utilizando `#video=copy#audio=aac#async`, garantindo reprodução de áudio fluida e sem engasgos em navegadores modernos e aplicativos móveis.
+* **Reprodução de Gravações no Navegador de Mídia:** Navegue e assista a gravações passadas do DVR organizadas por data e câmera diretamente no Home Assistant, com linha do tempo ribbon e miniaturas geradas sob demanda.
+
+### 🎨 Perfis de Imagem, Compensação de Luz e Agendamento de Períodos
+* **Seletor Dinâmico de Perfil / Período de Configuração:**
+  * **Câmeras Analógicas (`select.camera_*_period_config`):** Alternância entre `Vigente (Tempo real)`, `Período 1` e `Período 2`.
+  * **Câmeras IP Intelbras (`select.camera_*_profile_config`):** Alternância entre `Vigente (Tempo real)`, `Dia`, `Noite` e `Regular`.
+* **Exibição em Tempo Real e Edição Isolada:**
+  * No modo padrão **Vigente (Tempo real)**, todos os controles deslizantes, seletores e chaves refletem exatamente o estado do hardware em tempo real de acordo com o agendamento em vigor.
+  * Ao selecionar um período ou perfil específico, todos os controles atualizam instantaneamente para exibir os parâmetros salvos daquele período. Quaisquer alterações realizadas são gravadas diretamente no índice correspondente no DVR (`VideoColor[ch][prof]`, `VideoInDenoise[ch][prof]`, `ImageEnhancement[ch][prof]`, `NormalOptions`, `NightOptions`) sem alterar os demais períodos.
+* **Modo de Compensação de Luz (`select.camera_*_light_compensation_mode`):** Seletor unificado e mutuamente exclusivo suportando `Desabilitado`, `BLC` (Compensação de Luz de Fundo), `HLC` (Compensação de Luz Alta) e `WDR` (Amplo Alcance Dinâmico), populado dinamicamente com base nas capacidades de hardware de cada câmera (`getCaps`).
+* **Modos Dia/Noite e Estilo de Imagem:**
+  * Alternância entre `Colorido`, `Auto` e `Preto e Branco` (`select.camera_*_day_night_mode`) por perfil.
+  * Seleção do regime de gerenciamento de perfil: `Regular`, `Perfil Fixo`, `Agendamento` e `Dia/Noite` (`select.camera_*_profile_mode`).
+  * Estilos de imagem / modos de cena: `Padrão`, `Suave` e `Vivo` (`select.camera_*_scene_mode`).
+* **Redução de Ruído e Ganho de Imagem:**
+  * Controle deslizante de Redução de Ruído 2D (`number.camera_*_noise_reduction`) e chave de Redução Automática de Ruído (`switch.camera_*_auto_noise_reduction`).
+  * Controle deslizante de Ganho de Imagem (`number.camera_*_image_gain`) e Ajuste de Vídeo / nitidez (`number.camera_*_acutance`).
+* **Agendamento Contínuo e Sem Conflitos (Câmeras Analógicas):** Coordenação robusta de ciclo de 24 horas que calcula automaticamente intervalos complementares entre o Período 1 e o Período 2, prevenindo sobreposições ou conflitos de horário ao ativar ou alterar períodos.
+
+### ✍️ Texto Dinâmico Sobreposto no Vídeo (OSD)
+* **Texto Gravado na Imagem (`text.camera_*_channel_title_text`):** Entidade de texto gravada em tempo real diretamente no fluxo de vídeo ao vivo e nas gravações através do `ChannelTitle.Name` (até 64 caracteres). Atualize temperaturas externas, status de alarmes, sensores de portão ou avisos climáticos dinamicamente através de automações.
+* **Visibilidade de Itens OSD:** Chaves independentes para exibir ou ocultar o Nome do Canal (`switch.camera_*_channel_title_overlay`) e a Data/Hora (`switch.camera_*_time_title_overlay`).
+
+### 🕹️ Controles PTZ e Telemetria
+* **Movimentação Direcional:** Botões para Cima, Baixo, Esquerda, Direita e Zoom (+ / -) com velocidade ajustável e parada automática temporizada para prevenir movimentos descontrolados.
+* **Navegação por Predefinições:** Descoberta e posicionamento automático em presets salvos no hardware via `select.camera_*_ptz_preset`.
+* **Coordenadas de Hardware:** Atributos de estado expõem coordenadas em tempo real de `pan`, `tilt`, `zoom` e `move_status`.
+
+### 🚨 Eventos Push em Tempo Real e IA Perimetral IVS
+* **Fluxo HTTP de Baixa Latência (`eventManager.cgi?action=attach`):** Conexão push persistente fornecendo alertas instantâneos sem necessidade de logins recorrentes:
+  * Detecção de Movimento (`binary_sensor.camera_*_motion`).
+  * Perda de Vídeo / desconexão de câmera (`binary_sensor.camera_*_video_loss`).
+  * Mascaramento / adulteração de lente (`binary_sensor.camera_*_tampering`).
+  * IVS Linha Virtual / Tripwire (`binary_sensor.camera_*_linha_virtual`).
+  * IVS Intrusão Perimetral / Cerca Virtual (`binary_sensor.camera_*_cerca_virtual`).
+  * Alertas de Falha de Disco, Disco Ausente e Espaço em Disco Crítico.
+  * Alarme de Tentativa de Invasão por Força Bruta (`binary_sensor.dvr_*_login_failure`).
+
+### 📊 Saúde do Sistema, Diagnósticos e Diagnostics.py
+* **Monitoramento de Usuários Conectados (`sensor.dvr_*_active_users`):** Acompanhamento em tempo real de sessões ativas, clientes (`Web3.0`, `Dahua3.0`, aplicativos móveis), endereços IP e horários de login.
+* **Diagnóstico de Armazenamento e HD:** Detecção de falhas de hardware/S.A.R.T. (`binary_sensor.dvr_*_storage_failure`), atributos com tabela de saúde das partições, capacidade total/livre e botão de atualização sob demanda (`button.dvr_*_refresh_storage`).
+* **Telemetria de Rede:** Velocidade do link (Mbit/s), endereço MAC e sensor binário de integridade do cabo de rede (`binary_sensor.dvr_*_network_link`).
+* **Diagnóstico Oficial do Home Assistant:** Suporte nativo a `diagnostics.py` permitindo baixar o relatório JSON com um clique em **Configurações > Dispositivos e Serviços > Intelbras DVR > menu de 3 pontos** (ou no dispositivo da câmera), com ofuscação automática de senhas e dados sensíveis.
+* **Serviço de Consulta de Logs:** Serviço customizado `intelbras_dvr.get_logs` para consultar registros estruturados de auditoria e eventos diretamente no Home Assistant.
+
+### 🖥️ Gerenciamento da Saída Física de Monitor (HDMI/VGA)
+* **Seleção Dinâmica de Mosaico (Split):** Consulta em tempo real via `encode.cgi?action=getCaps` (`PreviewSplitNumList`) e `split.cgi` para gerar opções de mosaico (`1x1`, `2x2`, `1+7`, `3x3`, `4x4`, `5x5`, `6x6`) correspondentes ao hardware conectado.
+* **Prevenção de AutoLogout:** Mantém a saída de vídeo HDMI/VGA sempre ligada 24/7 desativando o tempo limite de ociosidade (`AutoLogout=0`).
+
+### 🛡️ Resiliência Corporativa e Estabilidade de Autenticação
+* **Fila Serializada de Autenticação Digest:** Semáforo assíncrono estrito (`_request_lock`) que elimina condições de corrida, limpa cookies CGI expirados e gerencia a renegociação de nonces Digest automaticamente.
+* **Proteção Anti-Bloqueio de Usuário:** Substitui falhas abruptas de autenticação por alertas não-bloqueantes em **Reparos** e um recuo progressivo (*backoff cooldown*), impedindo o bloqueio temporário do usuário no DVR.
+* **Tolerância a Falhas Transitórias:** Preserva o estado anterior das entidades durante oscilações momentâneas de rede sem disparar falsos alertas de indisponibilidade.
 
 ---
 
-## 🚀 Melhorias Arquiteturais (v0.5.0)
+## 📊 Compatibilidade de Hardware
 
-1. **Arquitetura Padrão Platinum Home Assistant:**
-   * Tipagem estrita PEP 695 (`type IntelbrasDVRConfigEntry = ConfigEntry[IntelbrasDVRData]`) e estado estruturado `DVRRuntimeState(TypedDict)` no `DataUpdateCoordinator`.
-   * Uso padronizado de dataclasses `EntityDescription` (`SensorEntityDescription`, `BinarySensorEntityDescription`, `ButtonEntityDescription`, `NumberEntityDescription`, `SelectEntityDescription`, `SwitchEntityDescription`, `UpdateEntityDescription`, `CameraEntityDescription`) em todas as plataformas.
-   * Fluxos nativos de `reauth` e `reconfigure` no `config_flow.py`, permitindo atualizar credenciais ou alterar IP/portas diretamente pela interface do Home Assistant sem perder o histórico das entidades.
-   * Tratamento assíncrono rigoroso de exceções (`ConfigEntryNotReady`, `UpdateFailed`, `ServiceValidationError` e `HomeAssistantError`) com recuperação automática e suporte completo a traduções via `translation_domain` e `translation_key`.
+Modelos e capacidades verificados:
 
-2. **Descoberta 100% Dinâmica de Hardware e Configurações (HTTP API V3.35):**
-   * Método unificado `async_discover_channels()` que consulta `ChannelTitle`, `VideoIn` (`devVideoInput.cgi?action=getCollect`) e `RemoteDevice` para detectar dinamicamente a quantidade total de canais do DVR (`4`, `8`, `16`, `32`), câmeras analógicas e IP ativas, formato de sinal (`HDCVI`, `AHD`, `TVI`, `CVBS`, `IP`), predefinições PTZ (`ptz.cgi?action=getPresets`), codecs de áudio e perfis de vídeo.
-   * **Descoberta Dinâmica de Mosaico de Monitor (HDMI/VGA):** Consulta `encode.cgi?action=getCaps` (`PreviewSplitNumList`) e `split.cgi?action=getMode` para construir dinamicamente as opções traduzidas de divisão de tela (`split1`, `split4`, `split8`, `split9`, `split16`, `split25`, `split36`) e os grupos de canais de acordo com o número exato de canais do equipamento.
-   * **Suporte a Atualização de Firmware V3.35:** Verifica tanto `CloudUpgrader` JSON-RPC / `upgrade.cgi?action=getInfo` quanto `upgrader.cgi?action=getState` para detecção e instalação de atualizações de firmware em nuvem.
-   * **Prevenção de AutoLogout:** Define automaticamente `GUISet[0].AutoLogout=0` (V3.35 §4.5.14) e `General.AutoLogout=0` na inicialização para manter a saída de vídeo HDMI/VGA sempre ativa.
-   * Zero canais, nomes de câmeras, opções de monitor ou endereços IP fixos (*hardcoded*) no código.
+| Modelo / Firmware | RTSP ao Vivo | Snapshots | Gravações | Áudio (go2rtc) | Eventos Push | Controles de Imagem | OSD Sobreposto | Controles PTZ | Mosaico HDMI/VGA | Diagnósticos do Sistema |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Intelbras iMHDX 3008**<br>`4.001.00IB001.0.T` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-3. **Mecanismo Híbrido e Eficiente de Reprodução de Gravações:**
-   * **Canais sem Áudio:** Transmissão direta via RTSP do DVR em HLS com 0% de uso adicional de CPU e latência mínima.
-   * **Canais com Áudio (ex: Vídeo Porteiro, câmeras com microfone embutido ou áudio coaxial HDCVI):** Registro dinâmico sob demanda no `go2rtc` com transcodificação de áudio `#video=copy#audio=aac#async`. O áudio AAC é universalmente compatível com navegadores web e com o aplicativo móvel Home Assistant Companion, garantindo reprodução sem descompasso ou engasgos. O fluxo temporário é encerrado e limpo automaticamente ao final da reprodução.
-
-4. **Localização Completa (i18n):**
-   * Paridade de 100% das chaves entre `strings.json`, `translations/en.json`, `translations/pt.json` e `translations/pt-BR.json`, abrangendo títulos de entidades, estados traduzidos, templates dinâmicos do seletor de monitor, etapas de configuração/opções/reautenticação/reconfiguração, exceções e serviços.
+*Compatível com gravadores Intelbras das linhas MHDX, iMHDX, NVD e equipamentos OEM baseados em Dahua executando a API HTTP V3.35.*
 
 ---
 
-## 📊 Matriz de Compatibilidade de Hardware Homologado
+## 🌟 Entidades e Plataformas
 
-A tabela abaixo lista os modelos de hardware verificados, versão de firmware e o status operacional das funcionalidades:
-
-| Modelo / Firmware | Live RTSP (Main / Sub) | Instantâneos (Snapshots) | Reprodução de Gravação (HLS) | Áudio Dinâmico AAC (go2rtc) | Miniaturas de Gravação | Eventos Push em Tempo Real | Controles de Imagem | Máscara de Privacidade | Divisão Monitor HDMI/VGA | Controles PTZ | Diagnósticos & Reinicialização |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Intelbras iMHDX 3008**<br>`4.001.00IB001.0.T` | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado | ✅ Suportado |
-
----
-
-## 🌟 Entidades e Plataformas Geradas
-
-### 🖥️ Entidades do Dispositivo Principal (DVR)
-| Plataforma | Entidade (`translation_key`) | Categoria | Descrição |
+### 🖥️ Entidades do Dispositivo DVR
+| Plataforma | Chave da Entidade | Categoria | Descrição |
 | :--- | :--- | :--- | :--- |
-| `sensor` | `dvr_status` | Diagnóstico | Status da conexão (`online` / `offline`), versão de firmware, número de série e carimbo de data/hora do último heartbeat |
-| `sensor` | `monitor_mode` | Diagnóstico | Modo ativo de divisão de tela HDMI/VGA (`split1`, `split4`, `split8`, `split9`, `split16`, etc.) com atributos `group` e `raw_value` |
-| `sensor` | `disk_status` | Diagnóstico | Capacidade do disco rígido (`total_gb`, `free_gb`), percentual de uso e estado de saúde |
-| `binary_sensor` | `event_stream` | Diagnóstico | Conectividade em tempo real do stream HTTP de eventos (`eventManager.cgi`) |
-| `select` | `monitor_split` | Principal | Seletor gerado dinamicamente para controle da saída de monitor HDMI/VGA e visualização de canais |
-| `button` | `dvr_reboot` | Configuração | Botão para reinicialização física do DVR |
-| `update` | `firmware` | Configuração | Verificador de atualizações de firmware e instalação com um clique |
+| `sensor` | `dvr_status` | Diagnóstico | Estado da conexão (`online` / `offline`), versão do firmware, número de série |
+| `sensor` | `monitor_mode` | Diagnóstico | Modo de divisão HDMI/VGA ativo com metadados de visualização e grupo |
+| `sensor` | `disk_usage` | Diagnóstico | Capacidade do disco rígido (`total_gb`, `free_gb`) e porcentagem de uso |
+| `sensor` | `active_users` | Diagnóstico | Contagem e detalhes de sessão dos clientes conectados atualmente |
+| `sensor` | `network_speed` | Diagnóstico | Velocidade do link da interface ethernet (Mbit/s) |
+| `binary_sensor` | `event_stream` | Diagnóstico | Conectividade do fluxo de eventos HTTP em tempo real |
+| `binary_sensor` | `storage_failure` | Diagnóstico | Alerta de falha de hardware / erro de I/O no disco |
+| `binary_sensor` | `storage_not_exist` | Diagnóstico | Alerta de disco de armazenamento ausente ou desconectado |
+| `binary_sensor` | `storage_low_space` | Diagnóstico | Alerta de pouco espaço livre no disco |
+| `binary_sensor` | `login_failure` | Diagnóstico | Alerta de tentativas repetidas de invasão ou login incorreto |
+| `binary_sensor` | `network_link` | Diagnóstico | Conectividade física do cabo de rede ethernet |
+| `select` | `monitor_select` | Configuração | Seletor de modo de mosaico para monitor físico HDMI/VGA |
+| `button` | `dvr_reboot` | Configuração | Botão para reinicializar o hardware do DVR |
+| `button` | `dvr_refresh` | Diagnóstico | Atualização dos dados do coordenador sob demanda |
+| `button` | `refresh_storage` | Diagnóstico | Atualização da telemetria de integridade das partições do HD |
+| `update` | `firmware_update` | Configuração | Verificador de atualizações de firmware e acionador de upgrade em nuvem |
 
-### 🎥 Entidades por Canal de Câmera (Modulares via Config/Options Flow)
-| Plataforma | Entidade (`translation_key`) | Recurso (`feature`) | Descrição |
+### 📹 Entidades dos Dispositivos de Câmera (Modulares via Config & Options Flow)
+| Plataforma | Chave da Entidade | Categoria | Descrição |
 | :--- | :--- | :--- | :--- |
-| `camera` | `main_stream` | `main_stream` | Stream RTSP de alta resolução (`subtype=0`) com fallback de snapshot CGI/FFmpeg |
-| `camera` | `sub_stream` | `sub_stream` | Stream RTSP leve (`subtype=1`) ideal para painéis de parede e dashboards |
-| `camera` | `snapshot` | `snapshot` | Câmera de imagem estática com intervalo de atualização configurável (`snapshot_interval`) |
-| `binary_sensor` | `motion` | `motion` | Detecção de movimento em tempo real (`VideoMotion` / `SmartMotionHuman` / `SmartMotionVehicle`) |
-| `binary_sensor` | `video_loss` | `motion` | Detecção de desconexão / perda de vídeo da câmera em tempo real (`VideoLoss`) |
-| `binary_sensor` | `tampering` | `motion` | Detecção de obstrução / mascaramento de lente em tempo real (`VideoBlind`) |
-| `select` | `color_profile` | `picture` | Perfil de ajuste de imagem ativo (`day`, `night`, `normal`) |
-| `number` | `brightness`, `contrast`, `saturation`, `hue`, `sharpness` | `picture` | Controles deslizantes de imagem por perfil (`0`–`100`) |
-| `button` | `reset_picture_defaults` | `picture` | Restaura o perfil de imagem atual para os padrões de fábrica (`50`) |
-| `switch` | `privacy_mask` | `privacy` | Oculta o vídeo da câmera (`Brightness=0, Contrast=0, Saturation=0`) e restaura os valores anteriores ao desativar |
-| `button` | `ptz_up`, `ptz_down`, `ptz_left`, `ptz_right`, `ptz_zoom_in`, `ptz_zoom_out` | `ptz` | Botões direcionais e de zoom PTZ com parada automática (criados apenas em canais com suporte a PTZ) |
-| `select` | `ptz_preset` | `ptz` | Move a câmera PTZ para uma predefinição descoberta (criado apenas em canais com presets configurados) |
+| `camera` | `main_stream` | Nenhuma | Fluxo RTSP de alta resolução (`subtype=0`) |
+| `camera` | `sub_stream` | Nenhuma | Fluxo RTSP de baixa resolução (`subtype=1`) |
+| `camera` | `snapshot` | Nenhuma | Entidade de imagem estática com intervalo de atualização configurável |
+| `binary_sensor` | `motion` | Nenhuma | Detecção de movimento em tempo real |
+| `binary_sensor` | `video_loss` | Diagnóstico | Desconexão de câmera / perda de sinal de vídeo |
+| `binary_sensor` | `video_blind` | Diagnóstico | Mascaramento / adulteração da lente da câmera |
+| `binary_sensor` | `cross_line` | Nenhuma | Detecção de Linha Virtual (IVS Tripwire) |
+| `binary_sensor` | `cross_region` | Nenhuma | Detecção de Intrusão Perimetral / Cerca Virtual (IVS) |
+| `select` | `period_config` | Configuração | Seletor de período (`active`, `period_1`, `period_2`) para visualização/edição (Analógicas) |
+| `select` | `profile_config` | Configuração | Seletor de perfil (`active`, `day`, `night`, `regular`) para visualização/edição (IP) |
+| `select` | `light_compensation_mode` | Configuração | Compensação de luz (`disabled`, `blc`, `hlc`, `wdr`) por perfil |
+| `select` | `day_night_mode` | Configuração | Modo dia/noite (`black_white`, `color`, `schedule`) por perfil (IP) |
+| `select` | `profile_mode` | Configuração | Regime de perfil (`regular`, `fixed`, `schedule`, `day_night`) (IP) |
+| `select` | `fixed_profile` | Configuração | Perfil fixo selecionado (`day`, `night`) (IP) |
+| `select` | `scene_mode` | Configuração | Estilo de imagem (`standard`, `soft`, `vivid`) (IP) |
+| `select` | `record_mode` | Configuração | Modo de agendamento de gravação (`schedule`, `manual`, `off`) |
+| `select` | `ptz_preset` | Configuração | Movimentação da câmera para um preset PTZ descoberto |
+| `number` | `brightness`, `contrast`, `hue`, `saturation` | Configuração | Controles deslizantes de cor e imagem (`0`–`100`) por perfil |
+| `number` | `acutance` | Configuração | Ajuste de vídeo / nitidez (`0`–`15`) por perfil |
+| `number` | `noise_reduction` | Configuração | Controle deslizante de Redução de Ruído 2D (`0`–`100`%) por perfil |
+| `number` | `image_gain` | Configuração | Controle deslizante de Ganho de Imagem (`0`–`100`%) por perfil |
+| `switch` | `auto_noise_reduction` | Configuração | Chave de Redução Automática de Ruído (`GainAuto`) por perfil |
+| `switch` | `privacy_mask` | Nenhuma | Mascaramento (escurecimento total) ou restauração da imagem de vídeo |
+| `switch` | `channel_title_overlay` | Configuração | Exibir ou ocultar a sobreposição do nome do canal no vídeo |
+| `switch` | `time_title_overlay` | Configuração | Exibir ou ocultar a sobreposição de data/hora no vídeo |
+| `switch` | `period_1_active`, `period_2_active` | Configuração | Ativar ou desativar períodos de agendamento analógico |
+| `text` | `channel_title_text` | Configuração | Texto dinâmico OSD gravado diretamente no fluxo de vídeo (até 64 caracteres) |
+| `time` | `day_start_time`, `day_end_time` | Configuração | Horários de início e término do dia para agendamento (IP) |
+| `time` | `period_1_start_time`, `period_1_end_time` | Configuração | Horários do Período 1 (Analógicas) |
+| `time` | `period_2_start_time`, `period_2_end_time` | Configuração | Horários do Período 2 (Analógicas) |
+| `button` | `camera_reset_defaults` | Configuração | Restaurar configurações padrão de imagem para o perfil ativo ou selecionado |
+| `button` | `ptz_up`, `ptz_down`, `ptz_left`, etc. | Nenhuma | Botões de movimentação direcional e zoom PTZ |
 
 ---
 
-## 🔐 Pré-requisitos: Usuário Dedicado e Permissões no DVR (Recomendado)
+### 💡 Exemplo de Automação com Texto Dinâmico no Vídeo (OSD)
 
-Antes de adicionar a integração no Home Assistant, **recomenda-se fortemente criar um usuário exclusivo para a integração** diretamente na interface do seu DVR Intelbras (**Sistema > Conta > Usuário**):
+```yaml
+automation:
+  - alias: "Atualizar OSD da câmera com a temperatura externa"
+    trigger:
+      - platform: state
+        entity_id: sensor.temperatura_externa
+    action:
+      - action: text.set_value
+        target:
+          entity_id: text.camera_canal_1_titulo_da_camera
+        data:
+          value: "Temp: {{ states('sensor.temperatura_externa') }}°C"
+```
 
-1. **Por que utilizar um usuário específico para a integração?**
-   * Evita conflitos de sessão e bloqueios temporários de segurança (`HTTP 401` / *lockout* de IP ou conta) quando contas pessoais ou o usuário `admin` são utilizados simultaneamente em aplicativos móveis (Intelbras iSIC / Guardian) ou navegadores web.
-   * Facilita a auditoria nos registros do equipamento (**Sistema > Log**), diferenciando claramente as ações automatizadas do Home Assistant dos acessos de usuários.
-   * Habilite a opção **Reutilizável** (*Reusable*) no cadastro do usuário (caso disponível no seu firmware) para permitir múltiplas conexões RTSP e HTTP simultâneas sem queda de sessão.
+---
 
-2. **Permissões Necessárias no DVR:**
-   Vincule o usuário ao grupo **`admin`** (ou conceda todas as permissões abaixo antes de iniciar a configuração no Home Assistant):
-   * **Monitor / Visualização ao Vivo** e **Reprodução / Pesquisa**: Obrigatórias para transmissão RTSP ao vivo, captura de instantâneos (snapshots) CGI e reprodução de gravações pelo Navegador de Mídia em todos os canais.
-   * **Controle PTZ**: Necessária para movimentação direcional, zoom e acionamento de predefinições (presets) PTZ.
-   * **Configurações de Sistema / Codificação / Câmera / Gravação / Tela**: Necessárias para leitura automática dos nomes e capacidades dos canais, ajuste de parâmetros de imagem (`Brilho`, `Contraste`, `Saturação`, `Matiz`, `Nitidez`), acionamento da Máscara de Privacidade, alteração do modo de gravação (`Agendado`, `Manual`, `Desativado`) e troca da visualização na saída física de vídeo HDMI/VGA (`split1`, `split4`, `split8`, `split9`, `split16`).
-   * **Informações do Sistema / HD / Atualização / Manutenção**: Necessárias para os sensores de diagnóstico de disco rígido, verificação de novas versões de firmware e uso do botão de reinicialização do DVR.
+## 🔐 Pré-requisitos: Usuário Dedicado no DVR e Permissões (Recomendado)
+
+Antes de adicionar a integração, é **fortemente recomendado** criar uma conta de usuário dedicada especificamente para o Home Assistant no seu DVR Intelbras (**Sistema > Conta > Usuário**):
+
+1. **Por que utilizar um usuário dedicado?**
+   * Previne conflitos de sessão e bloqueios temporários quando contas pessoais (`admin`) são acessadas simultaneamente por aplicativos de celular (Intelbras iSIC / Guardian) ou navegadores web.
+   * Mantém os logs de auditoria do DVR limpos e organizados.
+   * Ative a opção **Reutilizável** na conta de usuário, caso esteja disponível em seu firmware.
+
+2. **Permissões Necessárias:**
+   Associe o usuário ao grupo **`admin`** (ou a um grupo personalizado com as seguintes permissões habilitadas):
+   * **Visualização ao Vivo / Monitor** & **Reprodução / Pesquisa**: Fluxos RTSP ao vivo, snapshots e reprodução no Navegador de Mídia.
+   * **Controle PTZ**: Movimentação de câmeras e chamada de predefinições.
+   * **Configurações de Sistema / Encode / Câmera / Gravação / Exibição**: Controles de imagem, sobreposição OSD, máscara de privacidade, modos de gravação e layout do monitor HDMI/VGA.
+   * **Informações do Sistema / Armazenamento / Manutenção**: Diagnósticos de integridade do disco e reinicialização do equipamento.
 
 ---
 
 ## 📦 Instalação
 
 ### Via HACS (Recomendado)
-1. Certifique-se de que o [HACS](https://hacs.xyz/) está instalado.
+1. Certifique-se de ter o [HACS](https://hacs.xyz/) instalado.
 2. Abra o **HACS** no Home Assistant.
-3. Clique nos três pontos no canto superior direito e selecione **Repositórios personalizados**.
+3. Clique nos três pontos no canto superior direito e escolha **Repositórios personalizados**.
 4. Insira a URL: `https://github.com/fabiobrolo/intelbras_dvr`
 5. Selecione a categoria: **Integração**.
-6. Clique em **Adicionar**, localize **Intelbras DVR** na lista e clique em **Baixar**.
+6. Clique em **Adicionar**, localize **Intelbras DVR** na listagem e clique em **Baixar**.
 7. Reinicie o Home Assistant.
 
 ### Instalação Manual
-1. Copie a pasta `custom_components/intelbras_dvr/` para a pasta `/config/custom_components/` do seu Home Assistant.
+1. Copie o diretório `custom_components/intelbras_dvr/` para a sua pasta `/config/custom_components/`.
 2. Reinicie o Home Assistant.
 
 ---
 
-## ⚙️ Configuração, Reconfiguração e Reautenticação
+## ⚙️ Configuração, Opções e Manutenção
 
-1. No Home Assistant, acesse **Configurações > Dispositivos & Serviços > Adicionar Integração**.
+1. No Home Assistant, acesse **Configurações > Dispositivos e Serviços > Adicionar Integração**.
 2. Pesquise por **Intelbras DVR**.
-3. **Passo 1 - Conexão (`user`):** Informe o IP/host, usuário, senha, porta HTTP (padrão `80`) e porta RTSP (padrão `554`).
-4. **Passo 2 - Câmeras (`channels`):** A integração inspeciona dinamicamente todos os canais do DVR, exibe o nome personalizado e o suporte a PTZ de cada câmera, e oculta slots IP vazios. Marque as câmeras desejadas.
-5. **Passo 3 - Recursos (`features`):** Selecione quais recursos habilitar (`main_stream`, `sub_stream`, `snapshot`, `motion`, `picture`, `privacy`, `ptz`) e o intervalo de cache de instantâneos (`snapshot_interval`, padrão `30` segundos).
+3. **Passo 1 - Conexão:** Informe o endereço host/IP, usuário, senha, porta HTTP (padrão `80`) e porta RTSP (padrão `554`).
+4. **Passo 2 - Canais de Câmera:** A integração descobre automaticamente todos os canais ativos, seus nomes e suporte a PTZ. Selecione as câmeras que deseja importar.
+5. **Passo 3 - Seleção de Recursos:** Habilite os conjuntos de recursos desejados (`main_stream`, `sub_stream`, `snapshot`, `motion`, `video_color`, `profiles`, `overlay`, `ptz`, `recording`, etc.) e as opções de monitoramento de sistema.
 
-> 💡 **Fluxo de Opções (Adicionar/Remover Câmeras e Recursos):** Clique em **Configurar** no cartão da integração a qualquer momento para ativar/desativar canais ou recursos. Canais desmarcados têm seus dispositivos órfãos removidos automaticamente do Registro de Dispositivos.
+> 💡 **Opções (Options Flow):** Clique em **Configurar** no cartão da integração a qualquer momento para adicionar ou remover canais de câmera e recursos sem recriar entidades.
 >
-> 🔧 **Fluxo de Reconfiguração:** Abra o menu de três pontos no cartão da integração e selecione **Reconfigurar** para atualizar o endereço IP, portas HTTP/RTSP ou credenciais do DVR sem perder o histórico das entidades.
->
-> 🔐 **Credenciais e Recuperação Automática:** Caso o DVR retorne erros repetidos (`401/403`), a integração aplica um intervalo seguro anti-bloqueio, exibe um aviso não bloqueante em **Reparos** (`auth_retrying`) e retorna ao normal automaticamente assim que o acesso for restabelecido — ou selecione **Reconfigurar** se você alterou a senha no DVR.
+> 🔧 **Reconfiguração (Reconfigure Flow):** Utilize **Reconfigurar** no menu do cartão para atualizar host, portas ou credenciais sem perder o histórico das entidades.
 
 ---
 
-## 🛠️ Serviços Disponíveis
+## 🛠️ Serviços
 
 | Serviço | Descrição | Parâmetros |
 |---|---|---|
-| `intelbras_dvr.set_video_color` | Ajusta os parâmetros de cor da câmera | `channel` (`1`–`32`), `brightness`, `contrast`, `hue`, `saturation`, `acutance` (`0`–`100`), `profile` (`0`=Dia, `1`=Noite, `2`=Normal) |
-| `intelbras_dvr.mask_camera` | Oculta ou restaura o vídeo da câmera | `channel` (`1`–`32`), `action` (`mask` / `unmask`) |
-| `intelbras_dvr.set_monitor_split` | Altera a divisão de tela na saída HDMI/VGA | `mode` (`split1`, `split4`, `split8`, `split9`, `split16`, `split25`, `split36`), `group` (ex: `0`, `1`, `2`), `channel` (`1`–`32`) |
-| `intelbras_dvr.record_camera` | Força gravação contínua manual temporária | `channel` (`1`–`32`), `duration` (`5`–`3600` segundos) |
-| `intelbras_dvr.ptz_move` | Move a câmera PTZ com parada cronometrada | `channel` (`1`–`32`), `direction` (`Up`, `Down`, `Left`, `Right`, `ZoomWide`, `ZoomTele`, etc.), `speed` (`1`–`8`), `duration` (`0.1`–`10.0`s) |
-| `intelbras_dvr.ptz_stop` | Interrompe o movimento PTZ em andamento | `channel` (`1`–`32`), `direction` (opcional, padrão `Up`) |
-| `intelbras_dvr.ptz_preset` | Move a câmera PTZ para uma predefinição | `channel` (`1`–`32`), `preset` (`1`–`255`) |
-| `intelbras_dvr.reboot` | Reinicia o hardware do DVR | `entry_id` (opcional) |
+| `intelbras_dvr.set_video_color` | Ajusta propriedades de imagem em um canal de câmera | `channel` (`1`–`32`), `brightness`, `contrast`, `hue`, `saturation`, `acutance` (`0`–`100`), `profile` (`0`=Dia, `1`=Noite, `2`=Normal) |
+| `intelbras_dvr.mask_camera` | Aplica ou remove máscara de privacidade (escurecimento total) | `channel` (`1`–`32`), `action` (`mask` / `unmask`) |
+| `intelbras_dvr.set_monitor_split` | Altera o modo de divisão do monitor físico HDMI/VGA | `mode` (`split1`, `split4`, `split8`, `split9`, `split16`, etc.), `group`, `channel` |
+| `intelbras_dvr.record_camera` | Altera a câmera para gravação manual por um período determinado | `channel` (`1`–`32`), `duration` (`5`–`3600` segundos) |
+| `intelbras_dvr.ptz_move` | Move uma câmera PTZ em uma direção com parada automática | `channel` (`1`–`32`), `direction`, `speed` (`1`–`8`), `duration` (`0.1`–`10.0`s) |
+| `intelbras_dvr.ptz_stop` | Interrompe o movimento PTZ em andamento | `channel` (`1`–`32`), `direction` |
+| `intelbras_dvr.ptz_preset` | Move a câmera PTZ para uma predefinição salva no hardware | `channel` (`1`–`32`), `preset` (`1`–`255`) |
+| `intelbras_dvr.get_logs` | Consulta registros estruturados de auditoria e eventos do sistema | `count` (`1`–`100`), `log_type` |
+| `intelbras_dvr.reboot` | Reinicializa o hardware do DVR | `entry_id` (opcional) |
 
 ---
 
-## 📺 Linha do Tempo e Miniaturas com o `custom:advanced-camera-card`
+## 📺 Linha do Tempo e Miniaturas com `custom:advanced-camera-card`
 
 ```yaml
 type: custom:advanced-camera-card
@@ -184,10 +247,10 @@ cameras:
     media:
       type: folder
       folders:
-        - dvr_recordings
+        - gravacoes_dvr
 
 folders:
-  - id: dvr_recordings
+  - id: gravacoes_dvr
     type: ha
     ha:
       url: /media-browser/browser/app%2Cmedia-source%3A%2F%2Fintelbras_dvr%2FALLFILES%7C<ENTRY_ID>%7C<CH>%7C<YYYYMMDD>
@@ -207,10 +270,10 @@ timeline:
 
 ---
 
-## 👨‍💻 Autor & Mantenedor
+## 👨‍💻 Autor e Mantenedor
 
 * **Fábio Brolo** ([@fabiobrolo](https://github.com/fabiobrolo))
 
 ## 📄 Licença
 
-Distribuído sob a licença MIT. Consulte `LICENSE` para mais detalhes.
+Distribuído sob a Licença MIT. Consulte `LICENSE` para obter mais detalhes.

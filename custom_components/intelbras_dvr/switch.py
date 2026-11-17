@@ -6,6 +6,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -29,6 +30,49 @@ PRIVACY_MASK_DESCRIPTION = SwitchEntityDescription(
     icon="mdi:eye-off",
 )
 
+CUSTOM_TITLE_OVERLAY_DESCRIPTION = SwitchEntityDescription(
+    key="custom_title_overlay",
+    translation_key="custom_title_overlay",
+    icon="mdi:card-text-outline",
+    entity_category=EntityCategory.CONFIG,
+)
+
+CHANNEL_TITLE_OVERLAY_DESCRIPTION = SwitchEntityDescription(
+    key="channel_title_overlay",
+    translation_key="channel_title_overlay",
+    icon="mdi:format-title",
+    entity_category=EntityCategory.CONFIG,
+)
+
+TIME_TITLE_OVERLAY_DESCRIPTION = SwitchEntityDescription(
+    key="time_title_overlay",
+    translation_key="time_title_overlay",
+    icon="mdi:clock-outline",
+    entity_category=EntityCategory.CONFIG,
+)
+
+PERIOD_1_ACTIVE_DESCRIPTION = SwitchEntityDescription(
+    key="period_1_active",
+    translation_key="period_1_active",
+    icon="mdi:clock-check-outline",
+    entity_category=EntityCategory.CONFIG,
+)
+
+PERIOD_2_ACTIVE_DESCRIPTION = SwitchEntityDescription(
+    key="period_2_active",
+    translation_key="period_2_active",
+    icon="mdi:clock-check-outline",
+    entity_category=EntityCategory.CONFIG,
+)
+
+AUTO_NOISE_REDUCTION_DESCRIPTION = SwitchEntityDescription(
+    key="auto_noise_reduction",
+    translation_key="auto_noise_reduction",
+    icon="mdi:waveform",
+    entity_category=EntityCategory.CONFIG,
+)
+
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -45,6 +89,7 @@ async def async_setup_entry(
     }
 
     entities: list[SwitchEntity] = []
+    has_any_overlay = any(CameraFeature.OVERLAY in f for f in features_map.values())
     for ch in channels:
         name = channel_names.get(ch, f"Channel {ch + 1}")
         feats: list[str] = features_map.get(str(ch), [])
@@ -52,6 +97,30 @@ async def async_setup_entry(
             entities.append(
                 PrivacyMaskSwitch(coordinator, entry, ch, name, event_coordinator)
             )
+        overlay_enabled = CameraFeature.OVERLAY in feats if has_any_overlay else True
+        if overlay_enabled:
+            if coordinator.supports_custom_title(ch):
+                entities.append(
+                    CameraCustomTitleOverlaySwitch(coordinator, entry, ch, name)
+                )
+            if coordinator.supports_channel_title_overlay(ch):
+                entities.append(
+                    CameraChannelTitleOverlaySwitch(coordinator, entry, ch, name)
+                )
+            if coordinator.supports_time_title_overlay(ch):
+                entities.append(
+                    CameraTimeTitleOverlaySwitch(coordinator, entry, ch, name)
+                )
+        profiles_enabled = (
+            CameraFeature.PROFILES in feats
+            or (CameraFeature.PROFILES not in feats and CameraFeature.VIDEO_COLOR in feats)
+        )
+        if profiles_enabled:
+            if coordinator.supports_analog_periods(ch):
+                entities.append(CameraPeriod1ActiveSwitch(coordinator, entry, ch, name))
+                entities.append(CameraPeriod2ActiveSwitch(coordinator, entry, ch, name))
+            if coordinator.supports_auto_noise_reduction(ch):
+                entities.append(CameraAutoNoiseReductionSwitch(coordinator, entry, ch, name))
 
     async_add_entities(entities)
 
@@ -168,3 +237,371 @@ class PrivacyMaskSwitch(CameraChannelEntity, SwitchEntity):
             _LOGGER.error(
                 "Failed to remove privacy mask on channel %d.", self._channel
             )
+
+
+class CameraCustomTitleOverlaySwitch(CameraChannelEntity, SwitchEntity):
+    """Switch to toggle custom title overlay on the camera video."""
+
+    entity_description = CUSTOM_TITLE_OVERLAY_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the switch."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_custom_title_overlay"
+        self._optimistic_state: bool | None = None
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if custom title overlay is enabled."""
+        if self._optimistic_state is not None:
+            return self._optimistic_state
+        return self.coordinator.is_custom_title_enabled(self._channel)
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on poll."""
+        self._optimistic_state = None
+        super()._handle_coordinator_update()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable custom title overlay."""
+        self._optimistic_state = True
+        self.async_write_ha_state()
+        ok = await self.coordinator.client.set_video_widget_overlay(
+            self._channel, "custom_title", True, index=0
+        )
+        if ok:
+            if self.coordinator.data:
+                vw = self.coordinator.data.setdefault("video_widget", {})
+                ch_data = vw.setdefault(self._channel, {})
+                ch_data["custom_title_blend"] = True
+                self._optimistic_state = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+        else:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable custom title overlay."""
+        self._optimistic_state = False
+        self.async_write_ha_state()
+        ok = await self.coordinator.client.set_video_widget_overlay(
+            self._channel, "custom_title", False, index=0
+        )
+        if ok:
+            if self.coordinator.data:
+                vw = self.coordinator.data.setdefault("video_widget", {})
+                ch_data = vw.setdefault(self._channel, {})
+                ch_data["custom_title_blend"] = False
+                self._optimistic_state = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+        else:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+
+class CameraChannelTitleOverlaySwitch(CameraChannelEntity, SwitchEntity):
+    """Switch to toggle channel title overlay on the camera video."""
+
+    entity_description = CHANNEL_TITLE_OVERLAY_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the switch."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_channel_title_overlay"
+        self._optimistic_state: bool | None = None
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if channel title overlay is enabled."""
+        if self._optimistic_state is not None:
+            return self._optimistic_state
+        return self.coordinator.is_channel_title_enabled(self._channel)
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on poll."""
+        self._optimistic_state = None
+        super()._handle_coordinator_update()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable channel title overlay."""
+        self._optimistic_state = True
+        self.async_write_ha_state()
+        ok = await self.coordinator.client.set_video_widget_overlay(
+            self._channel, "channel_title", True
+        )
+        if ok:
+            if self.coordinator.data:
+                vw = self.coordinator.data.setdefault("video_widget", {})
+                ch_data = vw.setdefault(self._channel, {})
+                ch_data["channel_title_blend"] = True
+                self._optimistic_state = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+        else:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable channel title overlay."""
+        self._optimistic_state = False
+        self.async_write_ha_state()
+        ok = await self.coordinator.client.set_video_widget_overlay(
+            self._channel, "channel_title", False
+        )
+        if ok:
+            if self.coordinator.data:
+                vw = self.coordinator.data.setdefault("video_widget", {})
+                ch_data = vw.setdefault(self._channel, {})
+                ch_data["channel_title_blend"] = False
+                self._optimistic_state = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+        else:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+
+class CameraTimeTitleOverlaySwitch(CameraChannelEntity, SwitchEntity):
+    """Switch to toggle time title (clock) overlay on the camera video."""
+
+    entity_description = TIME_TITLE_OVERLAY_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the switch."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_time_title_overlay"
+        self._optimistic_state: bool | None = None
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if time title overlay is enabled."""
+        if self._optimistic_state is not None:
+            return self._optimistic_state
+        return self.coordinator.is_time_title_enabled(self._channel)
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on poll."""
+        self._optimistic_state = None
+        super()._handle_coordinator_update()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable time title overlay."""
+        self._optimistic_state = True
+        self.async_write_ha_state()
+        ok = await self.coordinator.client.set_video_widget_overlay(
+            self._channel, "time_title", True
+        )
+        if ok:
+            if self.coordinator.data:
+                vw = self.coordinator.data.setdefault("video_widget", {})
+                ch_data = vw.setdefault(self._channel, {})
+                ch_data["time_title_blend"] = True
+                self._optimistic_state = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+        else:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable time title overlay."""
+        self._optimistic_state = False
+        self.async_write_ha_state()
+        ok = await self.coordinator.client.set_video_widget_overlay(
+            self._channel, "time_title", False
+        )
+        if ok:
+            if self.coordinator.data:
+                vw = self.coordinator.data.setdefault("video_widget", {})
+                ch_data = vw.setdefault(self._channel, {})
+                ch_data["time_title_blend"] = False
+                self._optimistic_state = None
+                self.coordinator.async_set_updated_data(dict(self.coordinator.data))
+        else:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+
+class CameraPeriod1ActiveSwitch(CameraChannelEntity, SwitchEntity):
+    """Switch to enable or disable Período 1 for an analog camera."""
+
+    entity_description: SwitchEntityDescription = PERIOD_1_ACTIVE_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise Período 1 Active switch."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_period_1_active"
+        self._optimistic_state: bool | None = None
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if Period 1 is active."""
+        if self._optimistic_state is not None:
+            return self._optimistic_state
+        return self.coordinator.get_analog_period_active(self._channel, 0)
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on poll."""
+        self._optimistic_state = None
+        super()._handle_coordinator_update()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn on Period 1."""
+        self._optimistic_state = True
+        self.async_write_ha_state()
+        try:
+            await self.coordinator.async_set_analog_period_active(self._channel, 0, True)
+        finally:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn off Period 1."""
+        self._optimistic_state = False
+        self.async_write_ha_state()
+        try:
+            await self.coordinator.async_set_analog_period_active(self._channel, 0, False)
+        finally:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+
+class CameraPeriod2ActiveSwitch(CameraChannelEntity, SwitchEntity):
+    """Switch to enable or disable Período 2 for an analog camera."""
+
+    entity_description: SwitchEntityDescription = PERIOD_2_ACTIVE_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise Período 2 Active switch."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_period_2_active"
+        self._optimistic_state: bool | None = None
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if Period 2 is active."""
+        if self._optimistic_state is not None:
+            return self._optimistic_state
+        return self.coordinator.get_analog_period_active(self._channel, 1)
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on poll."""
+        self._optimistic_state = None
+        super()._handle_coordinator_update()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn on Period 2."""
+        self._optimistic_state = True
+        self.async_write_ha_state()
+        try:
+            await self.coordinator.async_set_analog_period_active(self._channel, 1, True)
+        finally:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn off Period 2."""
+        self._optimistic_state = False
+        self.async_write_ha_state()
+        try:
+            await self.coordinator.async_set_analog_period_active(self._channel, 1, False)
+        finally:
+            self._optimistic_state = None
+            self.async_write_ha_state()
+
+
+class CameraAutoNoiseReductionSwitch(CameraChannelEntity, SwitchEntity):
+    """Switch to toggle automatic noise reduction (GainAuto) on an analog camera."""
+
+    entity_description = AUTO_NOISE_REDUCTION_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the auto noise reduction switch."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_auto_noise_reduction"
+        self._optimistic_state: bool | None = None
+
+    @property
+    def is_on(self) -> bool:
+        """Return True if auto noise reduction is enabled for effective profile."""
+        if self._optimistic_state is not None:
+            return self._optimistic_state
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        return self.coordinator.client.get_gain_auto(self._channel, profile=prof)
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on poll."""
+        self._optimistic_state = None
+        super()._handle_coordinator_update()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable auto noise reduction for effective profile."""
+        self._optimistic_state = True
+        self.async_write_ha_state()
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        ok = await self.coordinator.client.set_gain_auto(self._channel, True, profile=prof)
+        if ok:
+            await self.coordinator.async_refresh_video_color()
+            self._optimistic_state = None
+            self.async_write_ha_state()
+        else:
+            self._optimistic_state = False
+            self.async_write_ha_state()
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="auto_noise_reduction_failed",
+            )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable auto noise reduction for effective profile."""
+        self._optimistic_state = False
+        self.async_write_ha_state()
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        ok = await self.coordinator.client.set_gain_auto(self._channel, False, profile=prof)
+        if ok:
+            await self.coordinator.async_refresh_video_color()
+            self._optimistic_state = None
+            self.async_write_ha_state()
+        else:
+            self._optimistic_state = True
+            self.async_write_ha_state()
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="auto_noise_reduction_failed",
+            )
+
+
+

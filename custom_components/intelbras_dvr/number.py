@@ -13,6 +13,7 @@ from homeassistant.components.number import (
 )
 from homeassistant.const import EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 if TYPE_CHECKING:
@@ -27,6 +28,7 @@ from .const import (
     DEFAULT_HUE,
     DEFAULT_SATURATION_ACUTANCE,
     DEFAULT_SNAPSHOT_INTERVAL,
+    DOMAIN,
     MAX_ACUTANCE,
     MAX_COLOR_VALUE,
     CameraFeature,
@@ -61,6 +63,7 @@ VIDEO_COLOR_DESCRIPTIONS: tuple[VideoColorDescription, ...] = (
         native_max_value=MAX_COLOR_VALUE,
         native_step=1,
         dvr_key="Brightness",
+        entity_category=EntityCategory.CONFIG,
     ),
     VideoColorDescription(
         key="contrast",
@@ -70,6 +73,7 @@ VIDEO_COLOR_DESCRIPTIONS: tuple[VideoColorDescription, ...] = (
         native_max_value=MAX_COLOR_VALUE,
         native_step=1,
         dvr_key="Contrast",
+        entity_category=EntityCategory.CONFIG,
     ),
     VideoColorDescription(
         key="hue",
@@ -79,6 +83,7 @@ VIDEO_COLOR_DESCRIPTIONS: tuple[VideoColorDescription, ...] = (
         native_max_value=MAX_COLOR_VALUE,
         native_step=1,
         dvr_key="Hue",
+        entity_category=EntityCategory.CONFIG,
     ),
     VideoColorDescription(
         key="saturation",
@@ -88,6 +93,7 @@ VIDEO_COLOR_DESCRIPTIONS: tuple[VideoColorDescription, ...] = (
         native_max_value=MAX_COLOR_VALUE,
         native_step=1,
         dvr_key="Saturation",
+        entity_category=EntityCategory.CONFIG,
     ),
     VideoColorDescription(
         key="acutance",
@@ -97,6 +103,7 @@ VIDEO_COLOR_DESCRIPTIONS: tuple[VideoColorDescription, ...] = (
         native_max_value=MAX_ACUTANCE,
         native_step=1,
         dvr_key="Acutance",
+        entity_category=EntityCategory.CONFIG,
     ),
 )
 
@@ -111,6 +118,31 @@ SNAPSHOT_INTERVAL_DESCRIPTION = NumberEntityDescription(
     native_unit_of_measurement=UnitOfTime.SECONDS,
     entity_category=EntityCategory.CONFIG,
 )
+
+NOISE_REDUCTION_DESCRIPTION = NumberEntityDescription(
+    key="noise_reduction",
+    translation_key="noise_reduction",
+    icon="mdi:tune-vertical",
+    mode=NumberMode.SLIDER,
+    native_min_value=0,
+    native_max_value=100,
+    native_step=1,
+    native_unit_of_measurement="%",
+    entity_category=EntityCategory.CONFIG,
+)
+
+IMAGE_GAIN_DESCRIPTION = NumberEntityDescription(
+    key="image_gain",
+    translation_key="image_gain",
+    icon="mdi:auto-fix",
+    mode=NumberMode.SLIDER,
+    native_min_value=0,
+    native_max_value=100,
+    native_step=1,
+    native_unit_of_measurement="%",
+    entity_category=EntityCategory.CONFIG,
+)
+IMAGE_ENHANCEMENT_DESCRIPTION = IMAGE_GAIN_DESCRIPTION
 
 
 async def async_setup_entry(
@@ -130,22 +162,37 @@ async def async_setup_entry(
         DVRSnapshotIntervalNumber(coordinator, entry),
     ]
     for ch in channels:
-        if CameraFeature.VIDEO_COLOR not in features_map.get(str(ch), []):
-            continue
+        feats = features_map.get(str(ch), [])
         ch_name = channel_names.get(ch, f"Channel {ch + 1}")
-        supports_acutance = coordinator.client.channel_supports_acutance(ch)
-        for desc in VIDEO_COLOR_DESCRIPTIONS:
-            if desc.dvr_key == "Acutance" and not supports_acutance:
-                continue
-            entities.append(
-                VideoColorNumber(
-                    coordinator=coordinator,
-                    entry=entry,
-                    channel=ch,
-                    channel_name=ch_name,
-                    description=desc,
+
+        if CameraFeature.VIDEO_COLOR in feats:
+            supports_acutance = coordinator.client.channel_supports_acutance(ch)
+            for desc in VIDEO_COLOR_DESCRIPTIONS:
+                if desc.dvr_key == "Acutance" and not supports_acutance:
+                    continue
+                entities.append(
+                    VideoColorNumber(
+                        coordinator=coordinator,
+                        entry=entry,
+                        channel=ch,
+                        channel_name=ch_name,
+                        description=desc,
+                    )
                 )
-            )
+
+        profiles_enabled = (
+            CameraFeature.PROFILES in feats
+            or (CameraFeature.PROFILES not in feats and CameraFeature.VIDEO_COLOR in feats)
+        )
+        if profiles_enabled:
+            if coordinator.supports_denoise_2d(ch):
+                entities.append(
+                    CameraNoiseReductionNumber(coordinator, entry, ch, ch_name)
+                )
+            if coordinator.supports_image_enhancement(ch):
+                entities.append(
+                    CameraImageGainNumber(coordinator, entry, ch, ch_name)
+                )
 
     async_add_entities(entities)
 
@@ -226,6 +273,7 @@ class VideoColorNumber(CameraChannelEntity, NumberEntity):
         supports_acutance = self.coordinator.client.channel_supports_acutance(
             self._channel
         )
+        prof = self.coordinator.get_effective_profile_index(self._channel)
         kwargs: dict[str, Any] = {
             "channel": self._channel,
             "brightness": int(
@@ -243,7 +291,7 @@ class VideoColorNumber(CameraChannelEntity, NumberEntity):
             "saturation": int(
                 color.get("Saturation", DEFAULT_VIDEO_COLOR["Saturation"])
             ),
-            "profile": None,
+            "profile": prof,
         }
         key_map = {
             "Brightness": "brightness",
@@ -255,9 +303,10 @@ class VideoColorNumber(CameraChannelEntity, NumberEntity):
         kwargs[key_map[self.entity_description.dvr_key]] = int(value)
 
         if self.coordinator.data and "video_color" in self.coordinator.data:
-            self.coordinator.data["video_color"].setdefault(self._channel, {})[
-                self.entity_description.dvr_key
-            ] = int(value)
+            if prof == self.coordinator.client.get_active_profile_index(self._channel):
+                self.coordinator.data["video_color"].setdefault(self._channel, {})[
+                    self.entity_description.dvr_key
+                ] = int(value)
 
         ok = await self.coordinator.client.set_video_color(**kwargs)
         if ok:
@@ -312,3 +361,83 @@ class DVRSnapshotIntervalNumber(DVREntity, NumberEntity):
             self._entry, options=new_options
         )
         self.async_write_ha_state()
+
+
+class CameraNoiseReductionNumber(CameraChannelEntity, NumberEntity):
+    """Number entity controlling 2D noise reduction (0..100)."""
+
+    _attr_mode = NumberMode.SLIDER
+    entity_description = NOISE_REDUCTION_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the noise reduction number entity."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_noise_reduction"
+
+    @property
+    def native_value(self) -> float:
+        """Return the current noise reduction level for the effective profile."""
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        return float(self.coordinator.client.get_noise_reduction(self._channel, profile=prof))
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set new noise reduction level for the effective profile."""
+        val = int(value)
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        ok = await self.coordinator.client.set_noise_reduction(self._channel, val, profile=prof)
+        if ok:
+            await self.coordinator.async_refresh_video_color()
+            self.async_write_ha_state()
+        else:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="noise_reduction_failed",
+            )
+
+
+class CameraImageGainNumber(CameraChannelEntity, NumberEntity):
+    """Number entity controlling image gain (formerly image enhancement) level (0..100)."""
+
+    _attr_mode = NumberMode.SLIDER
+    entity_description = IMAGE_GAIN_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the image gain number entity."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_image_gain"
+
+    @property
+    def native_value(self) -> float:
+        """Return the current image gain level for the effective profile."""
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        return float(self.coordinator.client.get_image_enhancement(self._channel, profile=prof))
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Set new image gain level for the effective profile."""
+        val = int(value)
+        prof = self.coordinator.get_effective_profile_index(self._channel)
+        ok = await self.coordinator.client.set_image_enhancement(self._channel, val, profile=prof)
+        if ok:
+            await self.coordinator.async_refresh_video_color()
+            self.async_write_ha_state()
+        else:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="image_gain_failed",
+            )
+
+
+# Backward compatibility alias
+CameraImageEnhancementNumber = CameraImageGainNumber

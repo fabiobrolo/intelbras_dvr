@@ -650,6 +650,12 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
                 for f in ALL_CAMERA_FEATURES
                 if f in union_stored and (f != CameraFeature.PTZ or has_ptz)
             ]
+            has_profiles = any(CameraFeature.PROFILES in f for f in stored_features.values())
+            if not has_profiles and CameraFeature.VIDEO_COLOR in union_stored:
+                current_enabled.append(CameraFeature.PROFILES)
+            has_overlay = any(CameraFeature.OVERLAY in f for f in stored_features.values())
+            if not has_overlay:
+                current_enabled.append(CameraFeature.OVERLAY)
             if has_ptz and CameraFeature.PTZ not in current_enabled:
                 ptz_selected = [
                     ch

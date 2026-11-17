@@ -7,7 +7,7 @@ import re
 import time
 import urllib.parse
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from typing import Any, Callable
 
 import httpx
@@ -110,9 +110,27 @@ class IntelbrasClient:
         self._remote_devices: dict[int, dict[str, Any]] = {}
         self._channel_signal_formats: dict[int, str] = {}
         self._total_channels: int = 0
+        self._channel_names: dict[int, str] = {}
+        self._video_in_options: dict[int, dict[str, Any]] = {}
+        self._video_color: dict[int, dict[str, Any]] = {}
+        self._video_color_by_profile: dict[int, dict[int, dict[str, Any]]] = {}
+        self._video_color_periods: dict[int, dict[int, dict[str, Any]]] = {}
+        self._video_input_caps: dict[int, dict[str, Any]] = {}
+        self._video_denoise: dict[int, dict[str, Any]] = {}
+        self._image_enhancement: dict[int, dict[str, Any]] = {}
         self._monitor_caps: list[int] | None = None
         self._latest_fw_version: str | None = None
         self._monitor_lock = asyncio.Lock()
+
+    @property
+    def channel_names(self) -> dict[int, str]:
+        """Return the cached mapping of channel index to channel title."""
+        return self._channel_names
+
+    @property
+    def remote_devices(self) -> dict[int, dict[str, Any]]:
+        """Return the remote IP device metadata mapping."""
+        return self._remote_devices
 
     @property
     def auth_lockout_remaining(self) -> float:
@@ -183,6 +201,43 @@ class IntelbrasClient:
         """Return True if the channel is an analog BNC camera."""
         return not self.channel_is_ip(channel)
 
+    def get_video_input_caps(self, channel: int) -> dict[str, Any]:
+        """Return cached video input capabilities for a channel."""
+        return self._video_input_caps.get(channel, {})
+
+    def channel_supports_backlight(self, channel: int) -> bool:
+        """Return True if the channel supports backlight compensation (BLC)."""
+        return self._video_input_caps.get(channel, {}).get("backlight", 0) > 0
+
+    def channel_supports_hlc(self, channel: int) -> bool:
+        """Return True if the channel supports highlight compensation (HLC / GlareInhibition)."""
+        return self._video_input_caps.get(channel, {}).get("glare_inhibition", 0) > 0
+
+    def channel_supports_wdr(self, channel: int) -> bool:
+        """Return True if the channel supports Wide Dynamic Range (WDR)."""
+        return self._video_input_caps.get(channel, {}).get("wide_dynamic_range", 0) > 0
+
+    def channel_supports_light_compensation(self, channel: int) -> bool:
+        """Return True if the channel supports any light compensation mode."""
+        caps = self._video_input_caps.get(channel, {})
+        return (
+            caps.get("backlight", 0) > 0
+            or caps.get("glare_inhibition", 0) > 0
+            or caps.get("wide_dynamic_range", 0) > 0
+        )
+
+    def channel_supports_denoise_2d(self, channel: int) -> bool:
+        """Return True if the channel supports 2D noise reduction."""
+        return self.channel_is_analog(channel) and self._video_input_caps.get(channel, {}).get("denoise_2d", False)
+
+    def channel_supports_image_enhancement(self, channel: int) -> bool:
+        """Return True if the channel supports image enhancement."""
+        return self.channel_is_analog(channel) and self._video_input_caps.get(channel, {}).get("image_enhancement", False)
+
+    def channel_supports_day_night(self, channel: int) -> bool:
+        """Return True if the channel supports Day/Night color mode."""
+        return self._video_input_caps.get(channel, {}).get("day_night_color", False)
+
     def get_channel_signal_format(self, channel: int) -> str:
         """Return the detected video signal format for a channel (e.g. HDCVI, AHD, TVI, CVBS, IP)."""
         if self.channel_is_ip(channel):
@@ -241,6 +296,15 @@ class IntelbrasClient:
             )
 
         url = self.base_url + path
+        req_params = params
+        if req_params:
+            # Dahua/Intelbras CGI requires literal brackets in table names like VideoInOptions[0]
+            # urlencode with safe="[]:" ensures brackets are not converted to %5B / %5D
+            qs = urllib.parse.urlencode(req_params, doseq=True, safe="[]:", quote_via=urllib.parse.quote)
+            joiner = "&" if "?" in url else "?"
+            url = f"{url}{joiner}{qs}"
+            req_params = None
+
         async with self._request_lock:
             remaining = self.auth_lockout_remaining
             if remaining > 0:
@@ -258,7 +322,7 @@ class IntelbrasClient:
                     if method == "POST":
                         resp = await client.post(url, json=json, timeout=timeout)
                     else:
-                        resp = await client.get(url, params=params, timeout=timeout)
+                        resp = await client.get(url, params=req_params, timeout=timeout)
                 except httpx.ConnectError as exc:
                     raise DVRConnectionError(f"Cannot connect to DVR at {url}") from exc
                 except httpx.TimeoutException as exc:
@@ -421,6 +485,7 @@ class IntelbrasClient:
 
         if titles:
             self._total_channels = max(self._total_channels, len(titles), max(titles.keys()) + 1)
+            self._channel_names.update(titles)
 
         if not active_only or not titles:
             return titles
@@ -521,6 +586,75 @@ class IntelbrasClient:
             _LOGGER.debug("DVR logs query probe failed: %s", exc)
 
         return caps
+
+    async def async_discover_video_input_caps(
+        self, channels: list[int]
+    ) -> dict[int, dict[str, Any]]:
+        """Query devVideoInput.cgi?action=getCaps for each channel to discover hardware capabilities."""
+        caps_map: dict[int, dict[str, Any]] = {}
+
+        async def _fetch_one(ch: int) -> tuple[int, str]:
+            try:
+                resp = await self._get(
+                    f"{DEV_VIDEO_INPUT_CGI}?action=getCaps&channel={ch + 1}",
+                    timeout=5.0,
+                )
+                if resp.status_code == 200:
+                    return ch, resp.text
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("Failed to getCaps for channel %d: %s", ch + 1, exc)
+            return ch, ""
+
+        results = await asyncio.gather(*[_fetch_one(ch) for ch in channels])
+        for ch, text in results:
+            c = {
+                "backlight": 0,
+                "glare_inhibition": 0,
+                "wide_dynamic_range": 0,
+                "gain": False,
+                "gain_auto": False,
+                "day_night_color": False,
+                "denoise_2d": False,
+                "denoise_3d": False,
+                "image_enhancement": False,
+                "set_color": False,
+            }
+            if text:
+                for line in text.splitlines():
+                    line = line.strip()
+                    if line.startswith("caps.Backlight="):
+                        try:
+                            c["backlight"] = int(line.split("=")[1])
+                        except ValueError:
+                            pass
+                    elif line.startswith("caps.GlareInhibition="):
+                        try:
+                            c["glare_inhibition"] = int(line.split("=")[1])
+                        except ValueError:
+                            pass
+                    elif line.startswith("caps.WideDynamicRange="):
+                        try:
+                            c["wide_dynamic_range"] = int(line.split("=")[1])
+                        except ValueError:
+                            pass
+                    elif line.startswith("caps.Gain="):
+                        c["gain"] = line.split("=")[1].lower() == "true"
+                    elif line.startswith("caps.GainAuto="):
+                        c["gain_auto"] = line.split("=")[1].lower() == "true"
+                    elif line.startswith("caps.DayNightColor="):
+                        c["day_night_color"] = line.split("=")[1].lower() == "true"
+                    elif line.startswith("caps.VideoInDenoise.2D.Support="):
+                        c["denoise_2d"] = line.split("=")[1].lower() == "true"
+                    elif line.startswith("caps.VideoInDenoise.3D.Support="):
+                        c["denoise_3d"] = line.split("=")[1].lower() == "true"
+                    elif line.startswith("caps.ImageEnhancement.Support="):
+                        c["image_enhancement"] = line.split("=")[1].lower() == "true"
+                    elif line.startswith("caps.SetColor="):
+                        c["set_color"] = line.split("=")[1].lower() == "true"
+            caps_map[ch] = c
+            self._video_input_caps[ch] = c
+
+        return caps_map
 
     async def get_monitor_caps(self) -> list[int]:
         """Discover supported preview split modes (e.g. [1, 4, 8, 9, 16]) from the DVR.
@@ -658,6 +792,7 @@ class IntelbrasClient:
                 "ip_address": ip if ip not in ("", "0.0.0.0", "192.168.0.0") else None,
                 "http_port": int(http_port) if http_port.isdigit() else None,
                 "protocol": d.get("ProtocolType"),
+                "ProtocolType": d.get("ProtocolType"),
                 "configuration_url": config_url,
             }
 
@@ -816,9 +951,33 @@ class IntelbrasClient:
             r"table\.VideoColor\[(\d+)\](?:\[(\d+)\])?\.([A-Za-z]+)=(\d+)"
         )
         acutance_pattern = re.compile(r"table\.VideoColor\[(\d+)\].*Acutance=(\d+)")
+        ts_pattern = re.compile(
+            r"table\.VideoColor\[(\d+)\]\[(\d+)\]\.TimeSection=(\d+)\s+(\d{2}):(\d{2}):(\d{2})-(\d{2}):(\d{2}):(\d{2})"
+        )
 
         for line in resp.text.splitlines():
             line_str = line.strip()
+
+            ts_m = ts_pattern.match(line_str)
+            if ts_m:
+                ch = int(ts_m.group(1))
+                period = int(ts_m.group(2))
+                active = int(ts_m.group(3)) == 1
+                sh, sm, ss = int(ts_m.group(4)), int(ts_m.group(5)), int(ts_m.group(6))
+                eh, em, es = int(ts_m.group(7)), int(ts_m.group(8)), int(ts_m.group(9))
+                if sh >= 24:
+                    sh, sm, ss = 23, 59, 59
+                if eh >= 24:
+                    eh, em, es = 23, 59, 59
+                start = dt_time(sh, sm, ss)
+                end = dt_time(eh, em, es)
+                self._video_color_periods.setdefault(ch, {})[period] = {
+                    "active": active,
+                    "start": start,
+                    "end": end,
+                }
+                continue
+
             match = pattern.match(line_str)
             if match:
                 ch = int(match.group(1))
@@ -848,41 +1007,57 @@ class IntelbrasClient:
         acutance: int | None = None,
         profile: int | None = None,
     ) -> bool:
-        """Update picture settings for a specific channel across its valid profile(s)."""
-        profiles_to_update = (
-            [profile] if profile is not None else self.get_channel_profiles(channel)
+        """Update picture settings for a specific channel on its active (or specified) profile."""
+        prof = (
+            profile
+            if profile is not None
+            else self.get_active_profile_index(channel)
         )
 
+        prefix = f"VideoColor[{channel}][{prof}]"
+        params: dict[str, Any] = {
+            "action": "setConfig",
+        }
+        if brightness is not None:
+            params[f"{prefix}.Brightness"] = brightness
+        if contrast is not None:
+            params[f"{prefix}.Contrast"] = contrast
+        if hue is not None:
+            params[f"{prefix}.Hue"] = hue
+        if saturation is not None:
+            params[f"{prefix}.Saturation"] = saturation
+        if acutance is not None and self.channel_supports_acutance(channel):
+            params[f"{prefix}.Acutance"] = acutance
+
+        if len(params) <= 1:
+            return True
+
         success = True
-        for prof in profiles_to_update:
-            prefix = f"VideoColor[{channel}][{prof}]"
-            params: dict[str, Any] = {
-                "action": "setConfig",
-            }
-            if brightness is not None:
-                params[f"{prefix}.Brightness"] = brightness
-            if contrast is not None:
-                params[f"{prefix}.Contrast"] = contrast
-            if hue is not None:
-                params[f"{prefix}.Hue"] = hue
-            if saturation is not None:
-                params[f"{prefix}.Saturation"] = saturation
-            if acutance is not None and self.channel_supports_acutance(channel):
-                params[f"{prefix}.Acutance"] = acutance
+        resp = await self._get(CONFIG_MANAGER_CGI, params=params)
+        if resp.status_code != 200 or "OK" not in resp.text:
+            fallback_prefix = f"VideoColor[{channel}]"
+            fallback_params: dict[str, Any] = {"action": "setConfig"}
+            for k, v in params.items():
+                if k != "action":
+                    fallback_params[k.replace(prefix, fallback_prefix)] = v
+            fb_resp = await self._get(CONFIG_MANAGER_CGI, params=fallback_params)
+            if fb_resp.status_code != 200 or "OK" not in fb_resp.text:
+                success = False
 
-            if len(params) <= 1:
-                continue
-
-            resp = await self._get(CONFIG_MANAGER_CGI, params=params)
-            if resp.status_code != 200 or "OK" not in resp.text:
-                fallback_prefix = f"VideoColor[{channel}]"
-                fallback_params: dict[str, Any] = {"action": "setConfig"}
-                for k, v in params.items():
-                    if k != "action":
-                        fallback_params[k.replace(prefix, fallback_prefix)] = v
-                fb_resp = await self._get(CONFIG_MANAGER_CGI, params=fallback_params)
-                if fb_resp.status_code != 200 or "OK" not in fb_resp.text:
-                    success = False
+        if success:
+            prof_dict = self._video_color_by_profile.setdefault(channel, {}).setdefault(prof, {})
+            base_dict = self._video_color.setdefault(channel, {})
+            for k, v in [
+                ("Brightness", brightness),
+                ("Contrast", contrast),
+                ("Hue", hue),
+                ("Saturation", saturation),
+                ("Acutance", acutance),
+            ]:
+                if v is not None:
+                    prof_dict[k] = v
+                    if prof == self.get_active_profile_index(channel):
+                        base_dict[k] = v
 
         return success
 
@@ -1318,23 +1493,137 @@ class IntelbrasClient:
     async def get_batch_config(
         self,
         channels: list[int],
-    ) -> tuple[dict[int, dict[str, int]], dict[int, int], dict[int, dict[str, Any]]]:
-        """Fetch VideoColor, RecordMode, and Encode settings in a single HTTP request."""
+    ) -> tuple[
+        dict[int, dict[str, int]],
+        dict[int, int],
+        dict[int, dict[str, Any]],
+        dict[int, dict[str, Any]],
+        dict[int, dict[str, Any]],
+    ]:
+        """Fetch VideoColor, RecordMode, Encode, VideoWidget, and VideoInOptions in a single HTTP request."""
         resp = await self._get(
             CONFIG_MANAGER_CGI,
-            params={"action": "getConfig", "name": ["VideoColor", "RecordMode", "Encode"]},
+            params={
+                "action": "getConfig",
+                "name": [
+                    "VideoColor",
+                    "RecordMode",
+                    "Encode",
+                    "VideoWidget",
+                    "VideoInOptions",
+                    "VideoInDenoise",
+                    "ImageEnhancement",
+                ],
+            },
         )
         if resp.status_code != 200:
-            return {}, {ch: RECORD_MODE_SCHEDULE for ch in channels}, {}
+            return {}, {ch: RECORD_MODE_SCHEDULE for ch in channels}, {}, {}, {}
 
         colors: dict[int, dict[str, int]] = {}
         modes: dict[int, int] = {}
+        video_widget: dict[int, dict[str, Any]] = {}
+        video_in_options: dict[int, dict[str, Any]] = {}
 
         vc_pattern = re.compile(
             r"table\.VideoColor\[(\d+)\](?:\[(\d+)\])?\.([A-Za-z]+)=(\d+)"
         )
+        vc_style_pattern = re.compile(
+            r"table\.VideoColor\[(\d+)\](?:\[(\d+)\])?\.Style=([A-Za-z]+)"
+        )
+        ts_pattern = re.compile(
+            r"table\.VideoColor\[(\d+)\]\[(\d+)\]\.TimeSection=(\d+)\s+(\d{2}):(\d{2}):(\d{2})-(\d{2}):(\d{2}):(\d{2})"
+        )
         acutance_pattern = re.compile(r"table\.VideoColor\[(\d+)\].*Acutance=(\d+)")
         rm_pattern = re.compile(r"table\.RecordMode\[(\d+)\]\.Mode=(\d+)")
+
+        vw_custom_text = re.compile(
+            r"table\.VideoWidget\[(\d+)\]\.CustomTitle\[(\d+)\]\.Text=(.*)"
+        )
+        vw_custom_blend = re.compile(
+            r"table\.VideoWidget\[(\d+)\]\.CustomTitle\[(\d+)\]\.EncodeBlend=(true|false)",
+            re.IGNORECASE,
+        )
+        vw_channel_blend = re.compile(
+            r"table\.VideoWidget\[(\d+)\]\.ChannelTitle\.EncodeBlend=(true|false)",
+            re.IGNORECASE,
+        )
+        vw_time_blend = re.compile(
+            r"table\.VideoWidget\[(\d+)\]\.TimeTitle\.EncodeBlend=(true|false)",
+            re.IGNORECASE,
+        )
+
+        vio_bare_dn = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.DayNightColor=(\d+)"
+        )
+        vio_norm_dn = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NormalOptions\.DayNightColor=(\d+)"
+        )
+        vio_night_dn = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NightOptions\.DayNightColor=(\d+)"
+        )
+        vio_switch_mode = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.(?:NightOptions\.)?SwitchMode=(\d+)"
+        )
+        vio_sunset_hour = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NightOptions\.SunsetHour=(\d+)"
+        )
+        vio_sunset_min = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NightOptions\.SunsetMinute=(\d+)"
+        )
+        vio_sunrise_hour = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NightOptions\.SunriseHour=(\d+)"
+        )
+        vio_sunrise_min = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NightOptions\.SunriseMinute=(\d+)"
+        )
+        vio_bare_wdr = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.WideDynamicRangeMode=(\d+)"
+        )
+        vio_norm_wdr = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NormalOptions\.WideDynamicRangeMode=(\d+)"
+        )
+        vio_night_wdr = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NightOptions\.WideDynamicRangeMode=(\d+)"
+        )
+        vio_bare_wdr_val = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.WideDynamicRange=(\d+)"
+        )
+        vio_bare_bl = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.Backlight=(\d+)"
+        )
+        vio_norm_bl = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NormalOptions\.Backlight=(\d+)"
+        )
+        vio_night_bl = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NightOptions\.Backlight=(\d+)"
+        )
+        vio_bare_gi = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.GlareInhibition=(\d+)"
+        )
+        vio_norm_gi = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NormalOptions\.GlareInhibition=(\d+)"
+        )
+        vio_night_gi = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NightOptions\.GlareInhibition=(\d+)"
+        )
+        vio_bare_gain = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.Gain=(\d+)"
+        )
+        vio_bare_gain_auto = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.GainAuto=(true|false)",
+            re.IGNORECASE,
+        )
+        vio_night_gain_auto = re.compile(
+            r"table\.VideoInOptions\[(\d+)\]\.NightOptions\.GainAuto=(true|false)",
+            re.IGNORECASE,
+        )
+
+        denoise_pattern = re.compile(
+            r"table\.VideoInDenoise\[(\d+)\](?:\[(\d+)\])?\.2DLevel=(\d+)"
+        )
+        enhancement_pattern = re.compile(
+            r"table\.ImageEnhancement\[(\d+)\](?:\[(\d+)\])?\.Level=(\d+)"
+        )
 
         for line in resp.text.splitlines():
             line_str = line.strip()
@@ -1344,6 +1633,26 @@ class IntelbrasClient:
                 ch = int(ac_match.group(1))
                 self._channel_supports_acutance.add(ch)
 
+            ts_m = ts_pattern.match(line_str)
+            if ts_m:
+                ch = int(ts_m.group(1))
+                period = int(ts_m.group(2))
+                active = int(ts_m.group(3)) == 1
+                sh, sm, ss = int(ts_m.group(4)), int(ts_m.group(5)), int(ts_m.group(6))
+                eh, em, es = int(ts_m.group(7)), int(ts_m.group(8)), int(ts_m.group(9))
+                if sh >= 24:
+                    sh, sm, ss = 23, 59, 59
+                if eh >= 24:
+                    eh, em, es = 23, 59, 59
+                start = dt_time(sh, sm, ss)
+                end = dt_time(eh, em, es)
+                self._video_color_periods.setdefault(ch, {})[period] = {
+                    "active": active,
+                    "start": start,
+                    "end": end,
+                }
+                continue
+
             vc_match = vc_pattern.match(line_str)
             if vc_match:
                 ch = int(vc_match.group(1))
@@ -1352,8 +1661,67 @@ class IntelbrasClient:
                 val = int(vc_match.group(4))
 
                 self._channel_profiles.setdefault(ch, set()).add(profile)
+                self._video_color_by_profile.setdefault(ch, {}).setdefault(profile, {})[prop] = val
                 if profile == 0:
                     colors.setdefault(ch, {})[prop] = val
+                continue
+
+            m_dn = denoise_pattern.match(line_str)
+            if m_dn:
+                ch = int(m_dn.group(1))
+                prof = int(m_dn.group(2)) if m_dn.group(2) is not None else 0
+                val = int(m_dn.group(3))
+                self._video_denoise.setdefault(ch, {})["2d_level"] = val
+                self._video_denoise.setdefault(ch, {}).setdefault("profiles", {})[prof] = val
+                continue
+
+            m_en = enhancement_pattern.match(line_str)
+            if m_en:
+                ch = int(m_en.group(1))
+                prof = int(m_en.group(2)) if m_en.group(2) is not None else 0
+                val = int(m_en.group(3))
+                self._image_enhancement.setdefault(ch, {})["level"] = val
+                self._image_enhancement.setdefault(ch, {}).setdefault("profiles", {})[prof] = val
+                continue
+
+            m_bl = vio_bare_bl.match(line_str)
+            if m_bl:
+                video_in_options.setdefault(int(m_bl.group(1)), {})["backlight"] = int(m_bl.group(2))
+                continue
+
+            m_bl_n = vio_norm_bl.match(line_str)
+            if m_bl_n:
+                video_in_options.setdefault(int(m_bl_n.group(1)), {})["normal_backlight"] = int(m_bl_n.group(2))
+                video_in_options.setdefault(int(m_bl_n.group(1)), {})["has_profile_options"] = True
+                continue
+
+            m_bl_ni = vio_night_bl.match(line_str)
+            if m_bl_ni:
+                video_in_options.setdefault(int(m_bl_ni.group(1)), {})["night_backlight"] = int(m_bl_ni.group(2))
+                video_in_options.setdefault(int(m_bl_ni.group(1)), {})["has_profile_options"] = True
+                continue
+
+            m_gi = vio_bare_gi.match(line_str)
+            if m_gi:
+                video_in_options.setdefault(int(m_gi.group(1)), {})["glare_inhibition"] = int(m_gi.group(2))
+                continue
+
+            m_gi_n = vio_norm_gi.match(line_str)
+            if m_gi_n:
+                video_in_options.setdefault(int(m_gi_n.group(1)), {})["normal_glare_inhibition"] = int(m_gi_n.group(2))
+                video_in_options.setdefault(int(m_gi_n.group(1)), {})["has_profile_options"] = True
+                continue
+
+            m_gi_ni = vio_night_gi.match(line_str)
+            if m_gi_ni:
+                video_in_options.setdefault(int(m_gi_ni.group(1)), {})["night_glare_inhibition"] = int(m_gi_ni.group(2))
+                video_in_options.setdefault(int(m_gi_ni.group(1)), {})["has_profile_options"] = True
+                continue
+
+            m_style = vc_style_pattern.match(line_str)
+            if m_style:
+                ch = int(m_style.group(1))
+                colors.setdefault(ch, {})["picture_style"] = m_style.group(3).lower()
                 continue
 
             rm_match = rm_pattern.match(line_str)
@@ -1362,13 +1730,811 @@ class IntelbrasClient:
                 modes[ch] = int(rm_match.group(2))
                 continue
 
+            m = vw_custom_text.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                idx = int(m.group(2))
+                if idx == 0:
+                    video_widget.setdefault(ch, {})["custom_title_text"] = m.group(3)
+                continue
+
+            m = vw_custom_blend.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                idx = int(m.group(2))
+                if idx == 0:
+                    video_widget.setdefault(ch, {})["custom_title_blend"] = m.group(3).lower() == "true"
+                continue
+
+            m = vw_channel_blend.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_widget.setdefault(ch, {})["channel_title_blend"] = m.group(2).lower() == "true"
+                continue
+
+            m = vw_time_blend.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_widget.setdefault(ch, {})["time_title_blend"] = m.group(2).lower() == "true"
+                continue
+
+            m = vio_bare_dn.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                val = int(m.group(2))
+                video_in_options.setdefault(ch, {})["day_night_color"] = val
+                video_in_options.setdefault(ch, {})["day_night"] = val
+                continue
+
+            m = vio_norm_dn.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                val = int(m.group(2))
+                video_in_options.setdefault(ch, {})["normal_day_night_color"] = val
+                video_in_options.setdefault(ch, {})["has_profile_options"] = True
+                continue
+
+            m = vio_night_dn.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                val = int(m.group(2))
+                video_in_options.setdefault(ch, {})["night_day_night_color"] = val
+                video_in_options.setdefault(ch, {})["has_profile_options"] = True
+                continue
+
+            m = vio_switch_mode.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["switch_mode"] = int(m.group(2))
+                continue
+
+            m = vio_sunset_hour.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["sunset_hour"] = int(m.group(2))
+                continue
+
+            m = vio_sunset_min.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["sunset_minute"] = int(m.group(2))
+                continue
+
+            m = vio_sunrise_hour.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["sunrise_hour"] = int(m.group(2))
+                continue
+
+            m = vio_sunrise_min.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["sunrise_minute"] = int(m.group(2))
+                continue
+
+            m = vio_bare_wdr.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["wdr_mode"] = int(m.group(2))
+                continue
+
+            m = vio_norm_wdr.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["normal_wdr_mode"] = int(m.group(2))
+                video_in_options.setdefault(ch, {})["has_profile_options"] = True
+                continue
+
+            m = vio_night_wdr.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["night_wdr_mode"] = int(m.group(2))
+                video_in_options.setdefault(ch, {})["has_profile_options"] = True
+                continue
+
+            m = vio_bare_wdr_val.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["wdr_val"] = int(m.group(2))
+                continue
+
+            m = vio_bare_gain.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["gain"] = int(m.group(2))
+                continue
+
+            m = vio_bare_gain_auto.match(line_str)
+            if m:
+                ch = int(m.group(1))
+                video_in_options.setdefault(ch, {})["gain_auto"] = m.group(2).lower() == "true"
+                self._video_in_options.setdefault(ch, {})["gain_auto"] = m.group(2).lower() == "true"
+                continue
+
+            m_nga = vio_night_gain_auto.match(line_str)
+            if m_nga:
+                ch = int(m_nga.group(1))
+                video_in_options.setdefault(ch, {})["night_gain_auto"] = m_nga.group(2).lower() == "true"
+                self._video_in_options.setdefault(ch, {})["night_gain_auto"] = m_nga.group(2).lower() == "true"
+                continue
+
         self._parse_encode_config(resp.text)
         encode_info = self._encode_config
 
         for ch in channels:
             modes.setdefault(ch, RECORD_MODE_SCHEDULE)
 
-        return colors, modes, encode_info
+        self._video_in_options = video_in_options
+
+        for ch in channels:
+            active_p = self.get_active_profile_index(ch)
+            if ch in self._video_color_by_profile and active_p in self._video_color_by_profile[ch]:
+                colors[ch] = dict(self._video_color_by_profile[ch][active_p])
+
+        self._video_color = colors
+        return colors, modes, encode_info, video_widget, video_in_options
+
+    async def set_custom_title_text(
+        self, channel: int, text: str, index: int = 0
+    ) -> bool:
+        """Set custom OSD text on the camera channel (VideoWidget)."""
+        encoded_text = urllib.parse.quote(text, safe="")
+        resp = await self._get(
+            f"{CONFIG_MANAGER_CGI}?action=setConfig&VideoWidget[{channel}].CustomTitle[{index}].Text={encoded_text}",
+            timeout=6.0,
+        )
+        return resp.status_code == 200 and "ok" in resp.text.lower()
+
+    async def set_video_widget_overlay(
+        self, channel: int, widget_type: str, enabled: bool, index: int = 0
+    ) -> bool:
+        """Toggle OSD overlay on or off on the camera stream."""
+        blend_str = "true" if enabled else "false"
+        if widget_type == "custom_title":
+            key = f"VideoWidget[{channel}].CustomTitle[{index}].EncodeBlend"
+        elif widget_type == "channel_title":
+            key = f"VideoWidget[{channel}].ChannelTitle.EncodeBlend"
+        elif widget_type == "time_title":
+            key = f"VideoWidget[{channel}].TimeTitle.EncodeBlend"
+        else:
+            return False
+
+        resp = await self._get(
+            CONFIG_MANAGER_CGI,
+            params={"action": "setConfig", key: blend_str},
+            timeout=6.0,
+        )
+        return resp.status_code == 200 and "ok" in resp.text.lower()
+
+    def get_day_night_mode(self, channel: int, profile: int | None = None) -> str:
+        """Return Day/Night mode string ('black_white', 'color', 'schedule') for a channel and profile."""
+        vio = self._video_in_options.get(channel, {})
+        has_profiles = vio.get("has_profile_options", False)
+        prof = profile if profile is not None else self.get_active_profile_index(channel)
+
+        if has_profiles:
+            if prof == 1:
+                val = vio.get("night_day_night_color", vio.get("day_night_color", 1))
+            elif prof == 0:
+                val = vio.get("normal_day_night_color", vio.get("day_night_color", 1))
+            else:
+                val = vio.get("day_night_color", 1)
+        else:
+            val = vio.get("day_night_color", vio.get("day_night", 1))
+
+        color_map = {0: "color", 1: "schedule", 2: "black_white"}
+        return color_map.get(val, "schedule")
+
+    async def set_day_night_mode(
+        self, channel: int, mode: str, profile: int | None = None
+    ) -> bool:
+        """Set Day/Night mode for a camera channel (0=Color, 1=Schedule, 2=BlackWhite) and specific profile."""
+        mode_map = {"color": 0, "schedule": 1, "auto": 1, "black_white": 2}
+        val = mode_map.get(mode.lower(), 1)
+        vio_ch = self._video_in_options.setdefault(channel, {})
+        has_profiles = vio_ch.get("has_profile_options", False)
+        prof = profile if profile is not None else self.get_active_profile_index(channel)
+
+        params: dict[str, Any] = {"action": "setConfig"}
+        if has_profiles:
+            if prof == 1:
+                params[f"VideoInOptions[{channel}].NightOptions.DayNightColor"] = val
+                if prof == self.get_active_profile_index(channel):
+                    params[f"VideoInOptions[{channel}].DayNightColor"] = val
+            elif prof == 0:
+                params[f"VideoInOptions[{channel}].NormalOptions.DayNightColor"] = val
+                if prof == self.get_active_profile_index(channel):
+                    params[f"VideoInOptions[{channel}].DayNightColor"] = val
+            else:
+                params[f"VideoInOptions[{channel}].DayNightColor"] = val
+        else:
+            params[f"VideoInOptions[{channel}].DayNightColor"] = val
+
+        resp = await self._get(
+            CONFIG_MANAGER_CGI,
+            params=params,
+            timeout=6.0,
+        )
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            if has_profiles:
+                if prof == 1:
+                    vio_ch["night_day_night_color"] = val
+                elif prof == 0:
+                    vio_ch["normal_day_night_color"] = val
+                else:
+                    vio_ch["day_night_color"] = val
+                if prof == self.get_active_profile_index(channel):
+                    vio_ch["day_night_color"] = val
+                    vio_ch["day_night"] = val
+            else:
+                vio_ch["day_night_color"] = val
+                vio_ch["day_night"] = val
+            return True
+        return False
+
+    def get_active_profile_index(self, channel: int) -> int:
+        """Return the active profile index for a channel.
+
+        For analog channels: 0 = Period 1, 1 = Period 2.
+        For IP channels: 0 = Day/Normal, 1 = Night, 2 = General.
+        """
+        if self.channel_is_analog(channel):
+            periods = self._video_color_periods.get(channel, {})
+            now_time = datetime.now().time()
+            p0 = periods.get(0, {})
+            p1 = periods.get(1, {})
+            if p0.get("active", False):
+                s, e = p0.get("start"), p0.get("end")
+                if s and e:
+                    if s <= e and s <= now_time <= e:
+                        return 0
+                    elif s > e and (now_time >= s or now_time <= e):
+                        return 0
+            if p1.get("active", False):
+                s, e = p1.get("start"), p1.get("end")
+                if s and e:
+                    if s <= e and s <= now_time <= e:
+                        return 1
+                    elif s > e and (now_time >= s or now_time <= e):
+                        return 1
+            return 0
+
+        vio = self._video_in_options.get(channel, {})
+        switch_mode = vio.get("switch_mode", 0)
+        if switch_mode == 3:  # Fixed Night
+            return 1
+        elif switch_mode == 0:  # Regular / Fixed Day
+            return 0
+        elif switch_mode == 2:  # Schedule
+            now_time = datetime.now().time()
+            sh = vio.get("sunrise_hour", 6)
+            sm = vio.get("sunrise_minute", 0)
+            eh = vio.get("sunset_hour", 18)
+            em = vio.get("sunset_minute", 0)
+            day_start = dt_time(sh, sm)
+            day_end = dt_time(eh, em)
+            if day_start <= day_end and day_start <= now_time < day_end:
+                return 0
+            elif day_start > day_end and (now_time >= day_start or now_time < day_end):
+                return 0
+            return 1
+        elif switch_mode == 1:  # Day/Night sensor
+            dn = vio.get("day_night_color", 0)
+            return 1 if dn == 1 else 0
+        return 0
+
+    def get_light_compensation_mode(
+        self, channel: int, profile: int | None = None
+    ) -> str:
+        """Return the current light compensation mode for a camera channel and profile.
+
+        Possible values: 'disabled', 'blc', 'hlc', 'wdr'.
+        """
+        vio = self._video_in_options.get(channel, {})
+        has_profiles = vio.get("has_profile_options", False)
+        prof = profile if profile is not None else self.get_active_profile_index(channel)
+
+        if has_profiles:
+            if prof == 1:
+                wdr = vio.get("night_wdr_mode", 0)
+                hlc = vio.get("night_glare_inhibition", 0)
+                blc = vio.get("night_backlight", 0)
+            elif prof == 0:
+                wdr = vio.get("normal_wdr_mode", 0)
+                hlc = vio.get("normal_glare_inhibition", 0)
+                blc = vio.get("normal_backlight", 0)
+            else:
+                wdr = vio.get("wdr_mode", 0)
+                hlc = vio.get("glare_inhibition", 0)
+                blc = vio.get("backlight", 0)
+        else:
+            wdr = vio.get("wdr_mode", 0)
+            hlc = vio.get("glare_inhibition", 0)
+            blc = vio.get("backlight", 0)
+
+        if wdr > 0:
+            return "wdr"
+        if hlc > 0:
+            return "hlc"
+        if blc > 0:
+            return "blc"
+        return "disabled"
+
+    async def set_light_compensation_mode(
+        self, channel: int, mode: str, profile: int | None = None
+    ) -> bool:
+        """Set light compensation mode ('disabled', 'blc', 'hlc', 'wdr') for a camera channel and profile."""
+        mode = mode.lower()
+        vio_ch = self._video_in_options.setdefault(channel, {})
+        has_profiles = vio_ch.get("has_profile_options", False)
+        prof = profile if profile is not None else self.get_active_profile_index(channel)
+
+        blc_val = 1 if mode == "blc" else 0
+        hlc_val = 50 if mode == "hlc" else 0
+        wdr_mode = 1 if mode == "wdr" else 0
+        wdr_val = 50 if mode == "wdr" else 0
+
+        params: dict[str, Any] = {"action": "setConfig"}
+        if has_profiles:
+            if prof == 1:  # Night
+                params[f"VideoInOptions[{channel}].NightOptions.Backlight"] = blc_val
+                params[f"VideoInOptions[{channel}].NightOptions.GlareInhibition"] = hlc_val
+                params[f"VideoInOptions[{channel}].NightOptions.WideDynamicRangeMode"] = wdr_mode
+                params[f"VideoInOptions[{channel}].NightOptions.WideDynamicRange"] = wdr_val
+                if prof == self.get_active_profile_index(channel):
+                    params[f"VideoInOptions[{channel}].Backlight"] = blc_val
+                    params[f"VideoInOptions[{channel}].GlareInhibition"] = hlc_val
+                    params[f"VideoInOptions[{channel}].WideDynamicRangeMode"] = wdr_mode
+                    params[f"VideoInOptions[{channel}].WideDynamicRange"] = wdr_val
+            elif prof == 0:  # Day / Normal
+                params[f"VideoInOptions[{channel}].NormalOptions.Backlight"] = blc_val
+                params[f"VideoInOptions[{channel}].NormalOptions.GlareInhibition"] = hlc_val
+                params[f"VideoInOptions[{channel}].NormalOptions.WideDynamicRangeMode"] = wdr_mode
+                params[f"VideoInOptions[{channel}].NormalOptions.WideDynamicRange"] = wdr_val
+                if prof == self.get_active_profile_index(channel):
+                    params[f"VideoInOptions[{channel}].Backlight"] = blc_val
+                    params[f"VideoInOptions[{channel}].GlareInhibition"] = hlc_val
+                    params[f"VideoInOptions[{channel}].WideDynamicRangeMode"] = wdr_mode
+                    params[f"VideoInOptions[{channel}].WideDynamicRange"] = wdr_val
+            else:  # Regular
+                params[f"VideoInOptions[{channel}].Backlight"] = blc_val
+                params[f"VideoInOptions[{channel}].GlareInhibition"] = hlc_val
+                params[f"VideoInOptions[{channel}].WideDynamicRangeMode"] = wdr_mode
+                params[f"VideoInOptions[{channel}].WideDynamicRange"] = wdr_val
+        else:
+            params[f"VideoInOptions[{channel}].Backlight"] = blc_val
+            params[f"VideoInOptions[{channel}].GlareInhibition"] = hlc_val
+            params[f"VideoInOptions[{channel}].WideDynamicRangeMode"] = wdr_mode
+            params[f"VideoInOptions[{channel}].WideDynamicRange"] = wdr_val
+
+        resp = await self._get(
+            CONFIG_MANAGER_CGI,
+            params=params,
+            timeout=6.0,
+        )
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            if has_profiles:
+                if prof == 1:
+                    vio_ch["night_backlight"] = blc_val
+                    vio_ch["night_glare_inhibition"] = hlc_val
+                    vio_ch["night_wdr_mode"] = wdr_mode
+                    vio_ch["night_wdr_val"] = wdr_val
+                elif prof == 0:
+                    vio_ch["normal_backlight"] = blc_val
+                    vio_ch["normal_glare_inhibition"] = hlc_val
+                    vio_ch["normal_wdr_mode"] = wdr_mode
+                    vio_ch["normal_wdr_val"] = wdr_val
+                else:
+                    vio_ch["backlight"] = blc_val
+                    vio_ch["glare_inhibition"] = hlc_val
+                    vio_ch["wdr_mode"] = wdr_mode
+                    vio_ch["wdr_val"] = wdr_val
+                if prof == self.get_active_profile_index(channel):
+                    vio_ch["backlight"] = blc_val
+                    vio_ch["glare_inhibition"] = hlc_val
+                    vio_ch["wdr_mode"] = wdr_mode
+                    vio_ch["wdr_val"] = wdr_val
+            else:
+                vio_ch["backlight"] = blc_val
+                vio_ch["glare_inhibition"] = hlc_val
+                vio_ch["wdr_mode"] = wdr_mode
+                vio_ch["wdr_val"] = wdr_val
+            return True
+        return False
+
+    async def set_wide_dynamic_range(
+        self, channel: int, enabled: bool, level: int = 50
+    ) -> bool:
+        """Enable or disable Wide Dynamic Range (WDR) for a camera channel."""
+        return await self.set_light_compensation_mode(channel, "wdr" if enabled else "disabled")
+
+    async def set_ip_profile_mode(
+        self, channel: int, mode_str: str, fixed_subprofile: str | None = None
+    ) -> bool:
+        """Set Profile management mode for an Intelbras IP camera channel.
+
+        Supported modes:
+        - 'regular': SwitchMode=0 (no sub-options)
+        - 'fixed': SwitchMode=0 for Day, SwitchMode=3 for Night
+        - 'schedule': SwitchMode=2 (schedule with sunrise/sunset hours)
+        - 'day_night': SwitchMode=1 (automatic ambient sensor)
+        """
+        mode = mode_str.lower()
+        if mode == "regular":
+            val = 0
+        elif mode == "fixed":
+            val = 3 if fixed_subprofile == "night" else 0
+        elif mode == "schedule":
+            val = 2
+        elif mode == "day_night":
+            val = 1
+        elif mode == "night":
+            val = 3
+        else:
+            val = 0
+
+        url = f"{CONFIG_MANAGER_CGI}?action=setConfig&VideoInOptions[{channel}].NightOptions.SwitchMode={val}"
+        resp = await self._get(url, timeout=6.0)
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            vio_ch = self._video_in_options.setdefault(channel, {})
+            vio_ch["switch_mode"] = val
+            return True
+        return False
+
+    async def set_ip_fixed_profile(self, channel: int, profile: str) -> bool:
+        """Set fixed profile (day or night) for an Intelbras IP camera channel."""
+        val = 3 if profile.lower() == "night" else 0
+        url = f"{CONFIG_MANAGER_CGI}?action=setConfig&VideoInOptions[{channel}].NightOptions.SwitchMode={val}"
+        resp = await self._get(url, timeout=6.0)
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            vio_ch = self._video_in_options.setdefault(channel, {})
+            vio_ch["switch_mode"] = val
+            return True
+        return False
+
+    async def set_ip_schedule_times(
+        self,
+        channel: int,
+        sunrise: dt_time | None = None,
+        sunset: dt_time | None = None,
+    ) -> bool:
+        """Set day start (sunrise) and day end (sunset) schedule times for an Intelbras IP camera."""
+        qs = ["action=setConfig"]
+        vio_ch = self._video_in_options.setdefault(channel, {})
+        if sunrise is not None:
+            qs.append(f"VideoInOptions[{channel}].NightOptions.SunriseHour={sunrise.hour}")
+            qs.append(f"VideoInOptions[{channel}].NightOptions.SunriseMinute={sunrise.minute}")
+            qs.append(f"VideoInOptions[{channel}].NightOptions.SunriseSecond=0")
+        if sunset is not None:
+            qs.append(f"VideoInOptions[{channel}].NightOptions.SunsetHour={sunset.hour}")
+            qs.append(f"VideoInOptions[{channel}].NightOptions.SunsetMinute={sunset.minute}")
+            qs.append(f"VideoInOptions[{channel}].NightOptions.SunsetSecond=0")
+
+        if len(qs) <= 1:
+            return True
+
+        url = f"{CONFIG_MANAGER_CGI}?" + "&".join(qs)
+        resp = await self._get(url, timeout=6.0)
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            if sunrise is not None:
+                vio_ch["sunrise_hour"] = sunrise.hour
+                vio_ch["sunrise_minute"] = sunrise.minute
+            if sunset is not None:
+                vio_ch["sunset_hour"] = sunset.hour
+                vio_ch["sunset_minute"] = sunset.minute
+            return True
+        return False
+
+    def get_analog_periods(self, channel: int) -> dict[int, dict[str, Any]]:
+        """Return parsed analog period intervals for a channel."""
+        return self._video_color_periods.get(channel, {})
+
+    def get_analog_period_active(self, channel: int, period_idx: int) -> bool:
+        """Return True if the analog period is active."""
+        periods = self._video_color_periods.get(channel, {})
+        return periods.get(period_idx, {}).get("active", True if period_idx == 0 else False)
+
+    async def set_analog_period_active(
+        self,
+        channel: int,
+        period_idx: int,
+        active: bool,
+    ) -> bool:
+        """Enable or disable Período 1 (idx 0) or Período 2 (idx 1) on an analog channel."""
+        ch_periods = self._video_color_periods.setdefault(channel, {})
+        p0 = ch_periods.get(0, {"active": True, "start": dt_time(6, 0), "end": dt_time(18, 0)})
+        p1 = ch_periods.get(1, {"active": False, "start": dt_time(18, 0), "end": dt_time(6, 0)})
+
+        p0_start = p0.get("start", dt_time(6, 0))
+        p0_end = p0.get("end", dt_time(18, 0))
+        p1_start = p1.get("start", dt_time(18, 0))
+        p1_end = p1.get("end", dt_time(6, 0))
+
+        if period_idx == 1:
+            if active:
+                # Turning on Period 2:
+                # If Period 0 was 24 hours (default) or matches Period 1, set defaults: Day (06:00-18:00) and Night (18:00-06:00)
+                is_24h = p0_start == dt_time(0, 0) and (
+                    p0_end >= dt_time(23, 59, 58) or p0_start == p0_end
+                )
+                if is_24h or (p0_start == p1_start and p0_end == p1_end):
+                    p0_start = dt_time(6, 0)
+                    p0_end = dt_time(18, 0)
+                # Period 2 is always the complementary interval of Period 1
+                p1_start = p0_end
+                p1_end = p0_start
+                p0_act = True
+                p1_act = True
+            else:
+                # Turning off Period 2: Period 1 covers 24h on the DVR
+                p0_act = True
+                p1_act = False
+                p0_start = dt_time(0, 0)
+                p0_end = dt_time(23, 59, 59)
+                p1_start = dt_time(0, 0)
+                p1_end = dt_time(23, 59, 59)
+        else:
+            # Period 0 is the primary profile
+            p0_act = True
+            if not active:
+                # Disabling primary period resets to a single 24h period and turns off Period 2
+                p1_act = False
+                p0_start = dt_time(0, 0)
+                p0_end = dt_time(23, 59, 59)
+                p1_start = dt_time(0, 0)
+                p1_end = dt_time(23, 59, 59)
+            else:
+                p1_act = p1.get("active", False)
+
+        p0_end_str = (
+            "24:00:00"
+            if (p0_end.hour == 23 and p0_end.minute == 59 and p0_end.second >= 58)
+            else p0_end.strftime("%H:%M:%S")
+        )
+        p1_end_str = (
+            "24:00:00"
+            if (p1_end.hour == 23 and p1_end.minute == 59 and p1_end.second >= 58)
+            else p1_end.strftime("%H:%M:%S")
+        )
+
+        p0_str = f"{1 if p0_act else 0}%20{p0_start.strftime('%H:%M:%S')}-{p0_end_str}"
+        p1_str = f"{1 if p1_act else 0}%20{p1_start.strftime('%H:%M:%S')}-{p1_end_str}"
+
+        ch_colors = self._video_color.get(channel, {})
+        bright = ch_colors.get("Brightness", DEFAULT_BRIGHTNESS)
+        contrast = ch_colors.get("Contrast", DEFAULT_CONTRAST)
+        hue = ch_colors.get("Hue", DEFAULT_HUE)
+        sat = ch_colors.get("Saturation", DEFAULT_SATURATION_ANALOG)
+        acut = ch_colors.get("Acutance", DEFAULT_ACUTANCE)
+
+        qs = [
+            "action=setConfig",
+            f"VideoColor[{channel}][0].Brightness={bright}",
+            f"VideoColor[{channel}][0].Contrast={contrast}",
+            f"VideoColor[{channel}][0].Hue={hue}",
+            f"VideoColor[{channel}][0].Saturation={sat}",
+            f"VideoColor[{channel}][0].Acutance={acut}",
+            f"VideoColor[{channel}][0].TimeSection={p0_str}",
+            f"VideoColor[{channel}][1].Brightness={bright}",
+            f"VideoColor[{channel}][1].Contrast={contrast}",
+            f"VideoColor[{channel}][1].Hue={hue}",
+            f"VideoColor[{channel}][1].Saturation={sat}",
+            f"VideoColor[{channel}][1].Acutance={acut}",
+            f"VideoColor[{channel}][1].TimeSection={p1_str}",
+        ]
+        url = f"{CONFIG_MANAGER_CGI}?" + "&".join(qs)
+        resp = await self._get(url, timeout=6.0)
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            ch_periods[0] = {"active": p0_act, "start": p0_start, "end": p0_end}
+            ch_periods[1] = {"active": p1_act, "start": p1_start, "end": p1_end}
+            return True
+        return False
+
+    async def set_analog_period_time(
+        self,
+        channel: int,
+        period_idx: int,
+        start_time: dt_time | None = None,
+        end_time: dt_time | None = None,
+    ) -> bool:
+        """Update start or end time for Período 1 (idx 0) or Período 2 (idx 1) on an analog channel."""
+        ch_periods = self._video_color_periods.setdefault(channel, {})
+        p0 = ch_periods.get(0, {"active": True, "start": dt_time(6, 0), "end": dt_time(18, 0)})
+        p1 = ch_periods.get(1, {"active": False, "start": dt_time(18, 0), "end": dt_time(6, 0)})
+
+        if period_idx == 0:
+            p0_start = start_time if start_time is not None else p0.get("start", dt_time(6, 0))
+            p0_end = end_time if end_time is not None else p0.get("end", dt_time(18, 0))
+            if p0_start == p0_end:
+                return False
+
+            is_24h = p0_start == dt_time(0, 0) and (
+                p0_end >= dt_time(23, 59, 58) or (p0_end.hour == 23 and p0_end.minute == 59)
+            )
+            if is_24h:
+                p0_act = True
+                p1_act = False
+                p1_start = dt_time(0, 0)
+                p1_end = dt_time(23, 59, 59)
+            else:
+                p0_act = True
+                p1_act = True
+                p1_start = p0_end
+                p1_end = p0_start
+        else:
+            p1_start = start_time if start_time is not None else p1.get("start", dt_time(18, 0))
+            p1_end = end_time if end_time is not None else p1.get("end", dt_time(6, 0))
+            if p1_start == p1_end:
+                return False
+
+            p0_act = True
+            p1_act = True
+            p0_end = p1_start
+            p0_start = p1_end
+
+        p0_end_str = (
+            "24:00:00"
+            if (p0_end.hour == 23 and p0_end.minute == 59 and p0_end.second >= 58)
+            else p0_end.strftime("%H:%M:%S")
+        )
+        p1_end_str = (
+            "24:00:00"
+            if (p1_end.hour == 23 and p1_end.minute == 59 and p1_end.second >= 58)
+            else p1_end.strftime("%H:%M:%S")
+        )
+
+        p0_str = f"{1 if p0_act else 0}%20{p0_start.strftime('%H:%M:%S')}-{p0_end_str}"
+        p1_str = f"{1 if p1_act else 0}%20{p1_start.strftime('%H:%M:%S')}-{p1_end_str}"
+
+        ch_colors = self._video_color.get(channel, {})
+        bright = ch_colors.get("Brightness", DEFAULT_BRIGHTNESS)
+        contrast = ch_colors.get("Contrast", DEFAULT_CONTRAST)
+        hue = ch_colors.get("Hue", DEFAULT_HUE)
+        sat = ch_colors.get("Saturation", DEFAULT_SATURATION_ANALOG)
+        acut = ch_colors.get("Acutance", DEFAULT_ACUTANCE)
+
+        qs = [
+            "action=setConfig",
+            f"VideoColor[{channel}][0].Brightness={bright}",
+            f"VideoColor[{channel}][0].Contrast={contrast}",
+            f"VideoColor[{channel}][0].Hue={hue}",
+            f"VideoColor[{channel}][0].Saturation={sat}",
+            f"VideoColor[{channel}][0].Acutance={acut}",
+            f"VideoColor[{channel}][0].TimeSection={p0_str}",
+            f"VideoColor[{channel}][1].Brightness={bright}",
+            f"VideoColor[{channel}][1].Contrast={contrast}",
+            f"VideoColor[{channel}][1].Hue={hue}",
+            f"VideoColor[{channel}][1].Saturation={sat}",
+            f"VideoColor[{channel}][1].Acutance={acut}",
+            f"VideoColor[{channel}][1].TimeSection={p1_str}",
+        ]
+        url = f"{CONFIG_MANAGER_CGI}?" + "&".join(qs)
+        resp = await self._get(url, timeout=6.0)
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            ch_periods[0] = {"active": p0_act, "start": p0_start, "end": p0_end}
+            ch_periods[1] = {"active": p1_act, "start": p1_start, "end": p1_end}
+            return True
+        return False
+
+    def get_video_color_by_profile(self, channel: int) -> dict[int, dict[str, int]]:
+        """Return cached picture settings organized by profile index for a channel."""
+        return self._video_color_by_profile.get(channel, {})
+
+    def get_noise_reduction(self, channel: int, profile: int | None = None) -> int:
+        """Return cached 2D noise reduction level (0..100) for a camera channel and profile."""
+        prof = profile if profile is not None else self.get_active_profile_index(channel)
+        prof_val = self._video_denoise.get(channel, {}).get("profiles", {}).get(prof)
+        if prof_val is not None:
+            return prof_val
+        return self._video_denoise.get(channel, {}).get("2d_level", 50)
+
+    async def set_noise_reduction(self, channel: int, level: int, profile: int | None = None) -> bool:
+        """Set 2D noise reduction level (0..100) for a camera channel and specific profile."""
+        level = max(0, min(100, level))
+        if profile is not None:
+            profs = [profile]
+        else:
+            profs = self.get_channel_profiles(channel) or [0, 1]
+        params: dict[str, Any] = {"action": "setConfig"}
+        for prof in profs:
+            params[f"VideoInDenoise[{channel}][{prof}].2DLevel"] = level
+
+        resp = await self._get(CONFIG_MANAGER_CGI, params=params, timeout=6.0)
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            ch_denoise = self._video_denoise.setdefault(channel, {})
+            ch_denoise["2d_level"] = level
+            for prof in profs:
+                ch_denoise.setdefault("profiles", {})[prof] = level
+            return True
+        return False
+
+    def get_image_enhancement(self, channel: int, profile: int | None = None) -> int:
+        """Return cached image enhancement level (0..100) for a camera channel and profile."""
+        prof = profile if profile is not None else self.get_active_profile_index(channel)
+        prof_val = self._image_enhancement.get(channel, {}).get("profiles", {}).get(prof)
+        if prof_val is not None:
+            return prof_val
+        return self._image_enhancement.get(channel, {}).get("level", 50)
+
+    async def set_image_enhancement(self, channel: int, level: int, profile: int | None = None) -> bool:
+        """Set image enhancement level (0..100) for a camera channel and specific profile."""
+        level = max(0, min(100, level))
+        if profile is not None:
+            profs = [profile]
+        else:
+            profs = self.get_channel_profiles(channel) or [0, 1]
+        params: dict[str, Any] = {"action": "setConfig"}
+        for prof in profs:
+            params[f"ImageEnhancement[{channel}][{prof}].Level"] = level
+            params[f"ImageEnhancement[{channel}][{prof}].Enable"] = "true" if level > 0 else "false"
+
+        resp = await self._get(CONFIG_MANAGER_CGI, params=params, timeout=6.0)
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            ch_enh = self._image_enhancement.setdefault(channel, {})
+            ch_enh["level"] = level
+            for prof in profs:
+                ch_enh.setdefault("profiles", {})[prof] = level
+            return True
+        return False
+
+    def get_gain_auto(self, channel: int, profile: int = 0) -> bool:
+        """Return cached GainAuto (Auto Noise Reduction) for a channel and profile."""
+        if profile == 1:
+            return self._video_in_options.get(channel, {}).get("night_gain_auto", False)
+        return self._video_in_options.get(channel, {}).get("gain_auto", False)
+
+    async def set_gain_auto(self, channel: int, enable: bool, profile: int = 0) -> bool:
+        """Set GainAuto (Auto Noise Reduction) on an analog camera channel for a specific profile."""
+        val = "true" if enable else "false"
+        key = f"VideoInOptions[{channel}].NightOptions.GainAuto" if profile == 1 else f"VideoInOptions[{channel}].GainAuto"
+        params: dict[str, Any] = {
+            "action": "setConfig",
+            key: val,
+        }
+        resp = await self._get(CONFIG_MANAGER_CGI, params=params, timeout=6.0)
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            prop = "night_gain_auto" if profile == 1 else "gain_auto"
+            self._video_in_options.setdefault(channel, {})[prop] = enable
+            return True
+        return False
+
+    async def set_switch_mode(self, channel: int, mode_str: str) -> bool:
+        """Set SwitchMode (Profile management mode) for a camera channel."""
+        return await self.set_ip_profile_mode(channel, mode_str)
+
+    async def set_picture_style(self, channel: int, style: str) -> bool:
+        """Set Picture Style / Scene Mode for a camera channel (Standard, Soft, Vivid)."""
+        style_title = style.title()
+        if style_title not in ("Standard", "Soft", "Vivid"):
+            style_title = "Standard"
+        params: dict[str, Any] = {
+            "action": "setConfig",
+            f"VideoColor[{channel}][0].Style": style_title,
+            f"VideoColor[{channel}][1].Style": style_title,
+            f"VideoColor[{channel}][2].Style": style_title,
+        }
+        resp = await self._get(
+            CONFIG_MANAGER_CGI,
+            params=params,
+            timeout=6.0,
+        )
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            ch_colors = self._video_color.setdefault(channel, {})
+            ch_colors["picture_style"] = style_title.lower()
+            return True
+        return False
+
+    async def set_channel_title(self, channel: int, title: str) -> bool:
+        """Set on-screen channel title name."""
+        encoded_title = urllib.parse.quote(title, safe="")
+        resp = await self._get(
+            f"{CONFIG_MANAGER_CGI}?action=setConfig&ChannelTitle[{channel}].Name={encoded_title}",
+            timeout=6.0,
+        )
+        if resp.status_code == 200 and "ok" in resp.text.lower():
+            self._channel_names[channel] = title
+            return True
+        return False
 
     def _parse_encode_config(self, text: str) -> None:
         """Parse Encode config into self._encode_config."""
@@ -1550,6 +2716,38 @@ class IntelbrasClient:
             return presets
 
         return {}
+
+    async def get_ptz_status(self, channel: int) -> dict[str, Any]:
+        """Fetch current PTZ position and status for a channel via ptz.cgi."""
+        resp = await self._get(
+            PTZ_CGI,
+            params={"action": "getStatus", "channel": channel + 1},
+        )
+        res: dict[str, Any] = {}
+        if resp.status_code == 200 and "status." in resp.text:
+            pos_pattern = re.compile(r"status\.Postion\[(\d+)\]=([-\d\.]+)")
+            for line in resp.text.splitlines():
+                line_str = line.strip()
+                m_pos = pos_pattern.match(line_str)
+                if m_pos:
+                    idx = int(m_pos.group(1))
+                    val = float(m_pos.group(2))
+                    if idx == 0:
+                        res["pan"] = val
+                    elif idx == 1:
+                        res["tilt"] = val
+                    elif idx == 2:
+                        res["zoom"] = val
+                elif line_str.startswith("status.MoveStatus="):
+                    res["move_status"] = line_str.split("=", 1)[1].strip()
+                elif line_str.startswith("status.ZoomStatus="):
+                    res["zoom_status"] = line_str.split("=", 1)[1].strip()
+                elif line_str.startswith("status.PresetID="):
+                    try:
+                        res["preset_id"] = int(line_str.split("=", 1)[1].strip())
+                    except ValueError:
+                        pass
+        return res
 
     # ------------------------------------------------------------------
     # Maintenance / Reboot / AutoLogout

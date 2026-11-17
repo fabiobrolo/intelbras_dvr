@@ -92,6 +92,8 @@
         "video_blind": "Video tampering sensor",
         "mask": "Privacy mask switch",
         "video_color": "Picture controls (brightness, contrast, etc.)",
+        "profiles": "Camera Profiles & Light Compensation",
+        "overlay": "Video Overlays (OSD Name, Time & Title)",
         "ptz": "PTZ control (pan / tilt / zoom)",
         "recording": "Continuous recording switch",
         "cross_line": "Tripwire detection sensor (IVS)",
@@ -246,6 +248,15 @@
       "acutance": {
         "name": "Acutance"
       },
+      "noise_reduction": {
+        "name": "Noise reduction"
+      },
+      "image_enhancement": {
+        "name": "Image enhancement"
+      },
+      "image_gain": {
+        "name": "Image gain"
+      },
       "snapshot_interval": {
         "name": "Snapshot update interval"
       }
@@ -263,6 +274,64 @@
           "schedule": "Schedule",
           "manual": "Manual",
           "off": "Off"
+        }
+      },
+      "day_night_mode": {
+        "name": "Day/Night mode",
+        "state": {
+          "black_white": "Black & White",
+          "color": "Color",
+          "schedule": "Schedule"
+        }
+      },
+      "profile_mode": {
+        "name": "Profile mode",
+        "state": {
+          "regular": "Regular",
+          "fixed": "Fixed Profile",
+          "schedule": "Schedule",
+          "day_night": "Day/Night"
+        }
+      },
+      "fixed_profile": {
+        "name": "Fixed profile",
+        "state": {
+          "day": "Day",
+          "night": "Night"
+        }
+      },
+      "scene_mode": {
+        "name": "Scene mode",
+        "state": {
+          "standard": "Standard",
+          "soft": "Soft",
+          "vivid": "Vivid"
+        }
+      },
+      "light_compensation_mode": {
+        "name": "Light compensation mode",
+        "state": {
+          "disabled": "Disabled",
+          "blc": "BLC (Backlight Compensation)",
+          "hlc": "HLC (Highlight Compensation)",
+          "wdr": "WDR (Wide Dynamic Range)"
+        }
+      },
+      "period_config": {
+        "name": "Configuration period",
+        "state": {
+          "active": "Active (Real-time)",
+          "period_1": "Period 1",
+          "period_2": "Period 2"
+        }
+      },
+      "profile_config": {
+        "name": "Configuration profile",
+        "state": {
+          "active": "Active (Real-time)",
+          "day": "Day",
+          "night": "Night",
+          "regular": "Regular"
         }
       }
     },
@@ -314,11 +383,63 @@
     "switch": {
       "privacy_mask": {
         "name": "Privacy mask"
+      },
+      "custom_title_overlay": {
+        "name": "Custom title overlay"
+      },
+      "channel_title_overlay": {
+        "name": "Channel title overlay"
+      },
+      "time_title_overlay": {
+        "name": "Time title overlay"
+      },
+      "wide_dynamic_range": {
+        "name": "Wide dynamic range (WDR)"
+      },
+      "image_gain_auto": {
+        "name": "Auto gain"
+      },
+      "auto_noise_reduction": {
+        "name": "Auto noise reduction"
+      },
+      "period_1_active": {
+        "name": "Period 1 active"
+      },
+      "period_2_active": {
+        "name": "Period 2 active"
       }
     },
     "update": {
       "dvr_firmware_update": {
         "name": "Firmware"
+      }
+    },
+    "time": {
+      "day_start_time": {
+        "name": "Day start time"
+      },
+      "day_end_time": {
+        "name": "Day end time"
+      },
+      "period_1_start_time": {
+        "name": "Period 1 start time"
+      },
+      "period_1_end_time": {
+        "name": "Period 1 end time"
+      },
+      "period_2_start_time": {
+        "name": "Period 2 start time"
+      },
+      "period_2_end_time": {
+        "name": "Period 2 end time"
+      }
+    },
+    "text": {
+      "channel_title_text": {
+        "name": "Channel title"
+      },
+      "custom_title_text": {
+        "name": "Custom title text"
       }
     }
   },
@@ -364,6 +485,24 @@
     },
     "firmware_update_rejected": {
       "message": "The DVR did not accept the online upgrade command. Please update manually at {url}."
+    },
+    "invalid_light_compensation_mode": {
+      "message": "Invalid light compensation mode '{mode}'. Supported: {supported}."
+    },
+    "light_compensation_mode_failed": {
+      "message": "Failed to set light compensation mode on the DVR."
+    },
+    "noise_reduction_failed": {
+      "message": "Failed to set noise reduction on the DVR."
+    },
+    "auto_noise_reduction_failed": {
+      "message": "Failed to set auto noise reduction on the DVR."
+    },
+    "image_gain_failed": {
+      "message": "Failed to set image gain on the DVR."
+    },
+    "image_enhancement_failed": {
+      "message": "Failed to set image enhancement on the DVR."
     }
   },
   "issues": {

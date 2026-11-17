@@ -8,7 +8,7 @@ from homeassistant.const import CONF_HOST
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_FEATURES, CONF_HTTP_PORT, DEFAULT_HTTP_PORT, DOMAIN
+from .const import CONF_FEATURES, CONF_HTTP_PORT, DEFAULT_HTTP_PORT, DOMAIN, CameraFeature
 from .coordinator import IntelbrasCoordinator, IntelbrasEventCoordinator
 
 
@@ -140,7 +140,11 @@ class CameraChannelEntity(CoordinatorEntity[IntelbrasCoordinator]):
 
     @property
     def _video_color(self) -> dict[str, int]:
-        """Return the current picture settings for this channel."""
+        """Return the current picture settings for this channel based on selected config profile."""
+        profile = self.coordinator.get_effective_profile_index(self._channel)
+        colors_by_prof = self.coordinator.client.get_video_color_by_profile(self._channel)
+        if profile in colors_by_prof:
+            return colors_by_prof[profile]
         colors: dict[int, dict[str, int]] = (self.coordinator.data or {}).get(
             "video_color", {}
         )
@@ -149,4 +153,12 @@ class CameraChannelEntity(CoordinatorEntity[IntelbrasCoordinator]):
     def _is_feature_enabled(self, feature: str) -> bool:
         """Return True if the given feature is enabled for this channel."""
         features_map: dict[str, list[str]] = self._entry.data.get(CONF_FEATURES, {})
-        return feature in features_map.get(str(self._channel), [])
+        enabled_for_ch = features_map.get(str(self._channel))
+        if enabled_for_ch is None:
+            return True
+        if feature == CameraFeature.PROFILES and feature not in enabled_for_ch:
+            return CameraFeature.VIDEO_COLOR in enabled_for_ch
+        if feature == CameraFeature.OVERLAY and feature not in enabled_for_ch:
+            has_overlay = any(CameraFeature.OVERLAY in f for f in features_map.values())
+            return not has_overlay
+        return feature in enabled_for_ch

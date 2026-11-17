@@ -4,12 +4,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import timedelta
+from datetime import time as dt_time, timedelta
 from typing import Any, TypedDict
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -49,7 +50,13 @@ class DVRRuntimeState(TypedDict, total=False):
     storage_info: dict[str, Any]
     record_modes: dict[int, int]
     encode_info: dict[int, dict[str, Any]]
+    video_widget: dict[int, dict[str, Any]]
+    video_in_options: dict[int, dict[str, Any]]
+    video_input_caps: dict[int, dict[str, Any]]
+    video_denoise: dict[int, dict[str, Any]]
+    image_enhancement: dict[int, dict[str, Any]]
     ptz_presets: dict[int, dict[int, str]]
+    ptz_status: dict[int, dict[str, Any]]
     firmware_update: dict[str, Any]
     active_users: list[dict[str, Any]]
     storage_diagnostics: dict[str, Any]
@@ -90,6 +97,9 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         )
         self.client = client
         self.config_entry = entry
+        saved_names = entry.data.get("channel_names", {})
+        if saved_names:
+            self.client._channel_names.update({int(k): v for k, v in saved_names.items()})
         self.snapshot_interval: float = float(
             entry.options.get(CONF_SNAPSHOT_INTERVAL, DEFAULT_SNAPSHOT_INTERVAL)
         )
@@ -115,6 +125,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         self._titles_synced: bool = False
         self._cached_ptz_presets: dict[int, dict[int, str]] = {}
         self._presets_loaded: bool = False
+        self._video_caps_loaded: bool = False
         self._last_firmware_check: float = 0.0
         self._cached_firmware_info: dict[str, Any] = {
             "available": False,
@@ -123,6 +134,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         }
         self._refresh_video_color_task: asyncio.Task[None] | None = None
         self._refresh_monitor_task: asyncio.Task[None] | None = None
+        self._selected_config_profile: dict[int, str] = {}
 
     @property
     def selected_channels(self) -> list[int]:
@@ -341,6 +353,15 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
                     except Exception as exc:  # noqa: BLE001
                         _LOGGER.debug("DVR get_remote_devices error: %s", exc)
 
+            if not self._video_caps_loaded:
+                try:
+                    await self.client.async_discover_video_input_caps(channels)
+                    self._video_caps_loaded = True
+                except DVRAuthError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("DVR getCaps discovery error: %s", exc)
+
             now = time.monotonic()
             should_check_firmware = (
                 now - self._last_firmware_check
@@ -432,7 +453,11 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         self._clear_auth_issue()
 
         encode_info: dict[int, dict[str, Any]] = {}
-        if isinstance(batch_config, tuple) and len(batch_config) == 3:
+        video_widget: dict[int, dict[str, Any]] = {}
+        video_in_options: dict[int, dict[str, Any]] = {}
+        if isinstance(batch_config, tuple) and len(batch_config) == 5:
+            video_color, record_modes, encode_info, video_widget, video_in_options = batch_config
+        elif isinstance(batch_config, tuple) and len(batch_config) == 3:
             video_color, record_modes, encode_info = batch_config
         elif isinstance(batch_config, tuple) and len(batch_config) == 2:
             video_color, record_modes = batch_config
@@ -446,6 +471,15 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             or 16
         )
 
+        ptz_status: dict[int, dict[str, Any]] = {}
+        for ptz_ch in self.ptz_channels:
+            try:
+                st = await self.client.get_ptz_status(ptz_ch)
+                if st:
+                    ptz_status[ptz_ch] = st
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("Could not fetch PTZ status for channel %d: %s", ptz_ch, exc)
+
         return {
             "system_info": self._cached_system_info or {},
             "software_version": self._cached_software_version,
@@ -457,7 +491,13 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             "storage_info": storage_info,
             "record_modes": record_modes,
             "encode_info": encode_info,
+            "video_widget": video_widget,
+            "video_in_options": video_in_options,
+            "video_input_caps": self.client._video_input_caps,
+            "video_denoise": self.client._video_denoise,
+            "image_enhancement": self.client._image_enhancement,
             "ptz_presets": self._cached_ptz_presets,
+            "ptz_status": ptz_status,
             "firmware_update": self._cached_firmware_info,
             "active_users": active_users,
             "storage_diagnostics": storage_diagnostics,
@@ -486,9 +526,13 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         async def _debounced_refresh() -> None:
             await asyncio.sleep(1.0)
             try:
-                video_color = await self.client.get_video_color()
-                if self.data is not None:
-                    self.data["video_color"] = video_color
+                batch = await self.client.get_batch_config(self.selected_channels)
+                if self.data is not None and isinstance(batch, tuple) and len(batch) >= 5:
+                    self.data["video_color"] = batch[0]
+                    self.data["video_widget"] = batch[3]
+                    self.data["video_in_options"] = batch[4]
+                    self.data["video_denoise"] = self.client._video_denoise
+                    self.data["image_enhancement"] = self.client._image_enhancement
                     self.async_update_listeners()
             except asyncio.CancelledError:
                 return
@@ -526,6 +570,371 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
 
         self._refresh_monitor_task = asyncio.create_task(_debounced_monitor_refresh())
 
+    # -----------------------------------------------------------------------
+    # Video Widget (OSD text / overlay) helpers
+    # -----------------------------------------------------------------------
+
+    def supports_video_widget(self, channel: int) -> bool:
+        """Check if VideoWidget configuration is available for this channel."""
+        if not self.data:
+            return False
+        return channel in self.data.get("video_widget", {})
+
+    def supports_custom_title(self, channel: int) -> bool:
+        """Check if Custom Title overlay is supported for this channel.
+
+        Returns False on this DVR series because IP cameras do not have
+        CustomTitle in VideoWidget and analog cameras lack rendering support.
+        """
+        return False
+
+    def supports_channel_title(self, channel: int) -> bool:
+        """Check if on-screen Channel Title text is supported for this channel."""
+        return channel in self.client.channel_names
+
+    def get_channel_title(self, channel: int) -> str:
+        """Return the on-screen channel title name."""
+        return self.client.channel_names.get(channel, "")
+
+    def supports_channel_title_overlay(self, channel: int) -> bool:
+        """Check if channel title overlay toggle is supported."""
+        if not self.data:
+            return False
+        return "channel_title_blend" in self.data.get("video_widget", {}).get(channel, {})
+
+    def supports_time_title_overlay(self, channel: int) -> bool:
+        """Check if time title overlay toggle is supported."""
+        if not self.data:
+            return False
+        return "time_title_blend" in self.data.get("video_widget", {}).get(channel, {})
+
+    def get_custom_title_text(self, channel: int) -> str:
+        """Return the custom title text for the channel."""
+        if not self.data:
+            return ""
+        return self.data.get("video_widget", {}).get(channel, {}).get("custom_title_text", "")
+
+    def is_custom_title_enabled(self, channel: int) -> bool:
+        """Return True if custom title overlay is enabled."""
+        if not self.data:
+            return False
+        return self.data.get("video_widget", {}).get(channel, {}).get("custom_title_blend", False)
+
+    def is_channel_title_enabled(self, channel: int) -> bool:
+        """Return True if channel title overlay is enabled."""
+        if not self.data:
+            return False
+        return self.data.get("video_widget", {}).get(channel, {}).get("channel_title_blend", False)
+
+    def is_time_title_enabled(self, channel: int) -> bool:
+        """Return True if time title overlay is enabled."""
+        if not self.data:
+            return False
+        return self.data.get("video_widget", {}).get(channel, {}).get("time_title_blend", False)
+
+    # -----------------------------------------------------------------------
+    # Camera Type & Classification helpers
+    # -----------------------------------------------------------------------
+
+    def is_intelbras_ip(self, channel: int) -> bool:
+        """Return True if channel is an Intelbras IP camera (Private protocol)."""
+        remotes = self.client.remote_devices or (
+            self.data.get("remote_devices", {}) if self.data else {}
+        )
+        dev = remotes.get(channel)
+        if isinstance(dev, dict):
+            proto = dev.get("ProtocolType") or dev.get("protocol")
+            return proto == "Private"
+        return False
+
+    def is_onvif(self, channel: int) -> bool:
+        """Return True if channel is an ONVIF IP camera."""
+        remotes = self.client.remote_devices or (
+            self.data.get("remote_devices", {}) if self.data else {}
+        )
+        dev = remotes.get(channel)
+        if isinstance(dev, dict):
+            proto = dev.get("ProtocolType") or dev.get("protocol")
+            return proto == "Onvif"
+        return False
+
+    def is_analog(self, channel: int) -> bool:
+        """Return True if channel is an analog (coaxial) camera."""
+        remotes = self.client.remote_devices or (
+            self.data.get("remote_devices", {}) if self.data else {}
+        )
+        return channel not in remotes
+
+    # -----------------------------------------------------------------------
+    # Video In Options (Day/Night, WDR, Profiles) helpers
+    # -----------------------------------------------------------------------
+
+    def supports_video_in_options(self, channel: int) -> bool:
+        """Check if VideoInOptions is available for this channel."""
+        if not self.data:
+            return False
+        return channel in self.data.get("video_in_options", {})
+
+    def supports_day_night(self, channel: int) -> bool:
+        """Check if Day/Night mode is supported for this channel."""
+        return self.is_intelbras_ip(channel) and self.client.channel_supports_day_night(channel)
+
+    def get_day_night_mode(self, channel: int) -> str:
+        """Return Day/Night mode string ('black_white', 'color', 'schedule') for the effective profile."""
+        prof = self.get_effective_profile_index(channel)
+        return self.client.get_day_night_mode(channel, profile=prof)
+
+    def supports_wdr(self, channel: int) -> bool:
+        """Check if Wide Dynamic Range is supported for this channel."""
+        if not self.is_intelbras_ip(channel) or not self.data:
+            return False
+        vio = self.data.get("video_in_options", {}).get(channel, {})
+        return "wdr_mode" in vio or "normal_wdr_mode" in vio or "night_wdr_mode" in vio
+
+    def is_wdr_enabled(self, channel: int) -> bool:
+        """Return True if WDR is enabled in the currently active profile."""
+        if not self.data:
+            return False
+        vio = self.data.get("video_in_options", {}).get(channel, {})
+        switch_mode = vio.get("switch_mode", 0)
+        if switch_mode == 2 and "sunset_hour" in vio and "sunrise_hour" in vio:
+            sunset = dt_time(vio["sunset_hour"], vio.get("sunset_minute", 0))
+            sunrise = dt_time(vio["sunrise_hour"], vio.get("sunrise_minute", 0))
+            now_time = dt_util.now().time()
+            is_night = (
+                (now_time >= sunset or now_time < sunrise)
+                if sunset > sunrise
+                else (sunset <= now_time < sunrise)
+            )
+            if is_night and "night_wdr_mode" in vio:
+                return vio["night_wdr_mode"] > 0
+            if not is_night and "normal_wdr_mode" in vio:
+                return vio["normal_wdr_mode"] > 0
+        if "normal_wdr_mode" in vio:
+            return vio["normal_wdr_mode"] > 0
+        return vio.get("wdr_mode", 0) > 0
+
+    def supports_profile_mode(self, channel: int) -> bool:
+        """Check if Profile Mode is supported for this channel (Intelbras IP cameras only)."""
+        if not self.is_intelbras_ip(channel) or not self.data:
+            return False
+        vio = self.data.get("video_in_options", {}).get(channel, {})
+        return "switch_mode" in vio
+
+    def supports_fixed_profile(self, channel: int) -> bool:
+        """Check if Fixed Profile selection is supported (Intelbras IP cameras only)."""
+        return self.is_intelbras_ip(channel)
+
+    def get_profile_mode(self, channel: int) -> str:
+        """Return Profile mode ('regular', 'fixed', 'schedule', 'day_night')."""
+        if not self.data:
+            return "regular"
+        vio = self.data.get("video_in_options", {}).get(channel, {})
+        mode_val = vio.get("switch_mode", 0)
+        # 0=regular/day, 1=day_night (auto sensor), 2=schedule, 3=night (fixed)
+        mode_map = {0: "regular", 1: "day_night", 2: "schedule", 3: "fixed"}
+        return mode_map.get(mode_val, "regular")
+
+    def get_fixed_profile(self, channel: int) -> str:
+        """Return Fixed profile selection ('day' or 'night')."""
+        if not self.data:
+            return "day"
+        vio = self.data.get("video_in_options", {}).get(channel, {})
+        return "night" if vio.get("switch_mode") == 3 else "day"
+
+    def get_ip_schedule_time(self, channel: int, which: str) -> dt_time:
+        """Return day start (sunrise) or day end (sunset) schedule time."""
+        vio = self.data.get("video_in_options", {}).get(channel, {}) if self.data else {}
+        if which == "start":
+            hour = min(23, max(0, vio.get("sunrise_hour", 6)))
+            minute = min(59, max(0, vio.get("sunrise_minute", 0)))
+            return dt_time(hour, minute)
+        hour = min(23, max(0, vio.get("sunset_hour", 18)))
+        minute = min(59, max(0, vio.get("sunset_minute", 0)))
+        return dt_time(hour, minute)
+
+    def get_profile_mode_info(self, channel: int) -> dict[str, Any]:
+        """Return schedule metadata attributes for Profile Mode entity."""
+        if not self.data:
+            return {}
+        vio = self.data.get("video_in_options", {}).get(channel, {})
+        info: dict[str, Any] = {}
+        if "sunrise_hour" in vio:
+            info["day_start_time"] = (
+                f"{vio['sunrise_hour']:02d}:{vio.get('sunrise_minute', 0):02d}:00"
+            )
+        if "sunset_hour" in vio:
+            info["day_end_time"] = (
+                f"{vio['sunset_hour']:02d}:{vio.get('sunset_minute', 0):02d}:00"
+            )
+        info["fixed_profile"] = "night" if vio.get("switch_mode") == 3 else "day"
+
+        if vio.get("switch_mode") == 2 and "sunset_hour" in vio and "sunrise_hour" in vio:
+            sunset = dt_time(vio["sunset_hour"], vio.get("sunset_minute", 0))
+            sunrise = dt_time(vio["sunrise_hour"], vio.get("sunrise_minute", 0))
+            now_time = dt_util.now().time()
+            is_night = (
+                (now_time >= sunset or now_time < sunrise)
+                if sunset > sunrise
+                else (sunset <= now_time < sunrise)
+            )
+            info["active_period"] = "night" if is_night else "day"
+        return info
+
+    def get_profile_period_info(self, channel: int) -> dict[str, Any]:
+        """Return schedule metadata attributes (alias for get_profile_mode_info)."""
+        return self.get_profile_mode_info(channel)
+
+    # -----------------------------------------------------------------------
+    # Analog Camera Periods (TimeSection) helpers
+    # -----------------------------------------------------------------------
+
+    def get_analog_period_time(self, channel: int, period_idx: int, which: str) -> dt_time:
+        """Return start or end time for analog camera period 1 (idx 0) or period 2 (idx 1)."""
+        periods = self.client.get_analog_periods(channel)
+        p = periods.get(period_idx, {})
+        if which == "start":
+            if "start" in p:
+                return p["start"]
+            return dt_time(6, 0) if period_idx == 0 else dt_time(18, 0)
+        if "end" in p:
+            return p["end"]
+        return dt_time(18, 0) if period_idx == 0 else dt_time(6, 0)
+
+    def get_analog_periods_info(self, channel: int) -> dict[str, Any]:
+        """Return schedule metadata attributes for an analog camera."""
+        periods = self.client.get_analog_periods(channel)
+        p0 = periods.get(0, {})
+        p1 = periods.get(1, {})
+        p0_start = p0.get("start", dt_time(6, 0))
+        p0_end = p0.get("end", dt_time(18, 0))
+        p1_start = p1.get("start", dt_time(18, 0))
+        p1_end = p1.get("end", dt_time(6, 0))
+
+        info: dict[str, Any] = {
+            "period_1": f"{p0_start.strftime('%H:%M:%S')} - {p0_end.strftime('%H:%M:%S')}",
+            "period_2": f"{p1_start.strftime('%H:%M:%S')} - {p1_end.strftime('%H:%M:%S')}",
+        }
+
+        now_time = dt_util.now().time()
+        if p0_start < p0_end:
+            in_p0 = p0_start <= now_time < p0_end
+        else:
+            in_p0 = now_time >= p0_start or now_time < p0_end
+
+        info["active_period"] = 1 if in_p0 else 2
+        return info
+
+    def supports_light_compensation(self, channel: int) -> bool:
+        """Check if Light Compensation (BLC, HLC, or WDR) is supported for this channel."""
+        return self.client.channel_supports_light_compensation(channel)
+
+    def supports_denoise_2d(self, channel: int) -> bool:
+        """Check if 2D noise reduction is supported for this channel."""
+        return self.client.channel_supports_denoise_2d(channel)
+
+    def supports_image_enhancement(self, channel: int) -> bool:
+        """Check if image enhancement is supported for this channel."""
+        return self.client.channel_supports_image_enhancement(channel)
+
+    def supports_auto_noise_reduction(self, channel: int) -> bool:
+        """Check if auto noise reduction is supported for this channel."""
+        return self.is_analog(channel)
+
+    def supports_acutance(self, channel: int) -> bool:
+        """Check if acutance (video adjustment) is supported for this channel."""
+        return self.client.channel_supports_acutance(channel)
+
+    def supports_analog_periods(self, channel: int) -> bool:
+        """Check if analog period schedule is supported for this channel."""
+        return self.is_analog(channel)
+
+    def get_analog_period_active(self, channel: int, period_idx: int) -> bool:
+        """Return True if the specified analog period is active."""
+        return self.client.get_analog_period_active(channel, period_idx)
+
+    async def async_set_analog_period_active(
+        self, channel: int, period_idx: int, active: bool
+    ) -> None:
+        """Enable or disable an analog period with schedule validation."""
+        ok = await self.client.set_analog_period_active(channel, period_idx, active)
+        if not ok:
+            raise HomeAssistantError(
+                f"Falha ao configurar estado do período {period_idx + 1} no canal {channel + 1}."
+            )
+        await self.async_request_refresh()
+
+    async def async_set_analog_period_time(
+        self,
+        channel: int,
+        period_idx: int,
+        start_time: dt_time | None = None,
+        end_time: dt_time | None = None,
+    ) -> None:
+        """Update start or end time for an analog period with validation."""
+        if start_time is not None and end_time is not None and start_time == end_time:
+            raise HomeAssistantError(
+                "O horário de início e término do período não podem ser iguais."
+            )
+
+        ok = await self.client.set_analog_period_time(
+            channel, period_idx, start_time=start_time, end_time=end_time
+        )
+        if not ok:
+            raise HomeAssistantError(
+                f"Falha ao atualizar horário do período {period_idx + 1} no canal {channel + 1}."
+            )
+        await self.async_request_refresh()
+
+    def supports_scene_mode(self, channel: int) -> bool:
+        """Check if Scene Mode / Picture Style is supported for this channel."""
+        if not self.is_intelbras_ip(channel) or not self.data:
+            return False
+        vc = self.data.get("video_color", {}).get(channel, {})
+        return "picture_style" in vc
+
+    def get_scene_mode(self, channel: int) -> str:
+        """Return current Scene Mode / Picture Style ('standard', 'soft', 'vivid')."""
+        if not self.data:
+            return "standard"
+        vc = self.data.get("video_color", {}).get(channel, {})
+        return vc.get("picture_style", "standard")
+
+    def get_ptz_status(self, channel: int) -> dict[str, Any]:
+        """Return cached PTZ position and movement status for a channel."""
+        if not self.data:
+            return {}
+        return self.data.get("ptz_status", {}).get(channel, {})
+
+    def supports_analog_period_config(self, channel: int) -> bool:
+        """Check if analog period config selector is supported for this channel."""
+        return self.supports_analog_periods(channel)
+
+    def supports_ip_profile_config(self, channel: int) -> bool:
+        """Check if IP profile config selector is supported for this channel."""
+        return self.is_intelbras_ip(channel)
+
+    def get_selected_config_profile(self, channel: int) -> str:
+        """Return currently selected view/edit profile or period mode for the channel."""
+        return self._selected_config_profile.get(channel, "active")
+
+    def set_selected_config_profile(self, channel: int, option: str) -> None:
+        """Update selected view/edit profile or period mode and notify entities."""
+        self._selected_config_profile[channel] = option
+        self.async_update_listeners()
+
+    def get_effective_profile_index(self, channel: int) -> int:
+        """Return the effective DVR profile index (0, 1, or 2) to view/edit for a channel."""
+        opt = self.get_selected_config_profile(channel)
+        if opt in ("period_1", "day"):
+            return 0
+        if opt in ("period_2", "night"):
+            return 1
+        if opt == "regular":
+            return 2
+        return self.client.get_active_profile_index(channel)
+
+
 
 # ---------------------------------------------------------------------------
 # Event coordinator — push stream for motion / alarm / video-loss sensors
@@ -558,6 +967,9 @@ class IntelbrasEventCoordinator(DataUpdateCoordinator[dict[int, dict[str, bool]]
         )
         self.client = client
         self.config_entry = entry
+        saved_names = entry.data.get("channel_names", {})
+        if saved_names:
+            self.client._channel_names.update({int(k): v for k, v in saved_names.items()})
         self.snapshot_interval: float = float(
             entry.options.get(CONF_SNAPSHOT_INTERVAL, DEFAULT_SNAPSHOT_INTERVAL)
         )
