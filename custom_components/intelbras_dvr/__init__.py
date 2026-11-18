@@ -180,8 +180,25 @@ PTZ_PRESET_SCHEMA = vol.Schema(
 GET_LOGS_SCHEMA = vol.Schema(
     {
         _ENTRY_ID_FIELD: cv.string,
-        vol.Optional("log_type", default="All"): vol.In(
-            ["All", "System", "Config", "Storage", "Alarm", "Record", "Account", "Clear"]
+        vol.Optional("log_type", default="all"): vol.In(
+            [
+                "all",
+                "system",
+                "config",
+                "storage",
+                "alarm",
+                "record",
+                "account",
+                "clear",
+                "All",
+                "System",
+                "Config",
+                "Storage",
+                "Alarm",
+                "Record",
+                "Account",
+                "Clear",
+            ]
         ),
         vol.Optional("count", default=20): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=100)
@@ -412,7 +429,8 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     async def handle_get_logs(call: ServiceCall) -> ServiceResponse:
         """Query audit and event logs from the DVR."""
         data = _runtime(call)
-        log_type: str = str(call.data.get("log_type", "All"))
+        raw_log_type: str = str(call.data.get("log_type", "all")).strip()
+        log_type = raw_log_type.capitalize() if raw_log_type else "All"
         count: int = int(call.data.get("count", 20))
         start_time: str | None = call.data.get("start_time")
         end_time: str | None = call.data.get("end_time")

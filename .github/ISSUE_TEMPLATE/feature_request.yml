@@ -1,0 +1,31 @@
+name: Feature Request / Sugestão de Funcionalidade
+description: Suggest a new feature or enhancement for the Intelbras DVR integration / Sugerir uma melhoria ou novo recurso
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: input
+    id: dvr_model
+    attributes:
+      label: DVR / NVR / Camera Model / Modelo do DVR ou Câmera
+      description: E.g., Intelbras iMHDX 3008, VIP 1430 B G2, etc.
+      placeholder: "iMHDX 3008"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Feature Description / Descrição da Funcionalidade
+      description: Describe the feature you would like to see and how it should work / Descreva o recurso desejado e como ele deveria funcionar.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics_json
+    attributes:
+      label: Home Assistant Diagnostics JSON (Optional / Opcional)
+      description: |
+        If your request relates to hardware capabilities on your DVR, attach or paste your **Download diagnostics** JSON from **Settings > Devices & Services > Intelbras DVR > `⋮` > Download diagnostics**.
+      render: json
+    validations:
+      required: false

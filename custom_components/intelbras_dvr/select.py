@@ -4,11 +4,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 if TYPE_CHECKING:
@@ -17,6 +18,7 @@ from .const import (
     CONF_CHANNELS,
     CONF_FEATURES,
     CONF_PTZ_CHANNELS,
+    DOMAIN,
     RECORD_MODE_MANUAL,
     RECORD_MODE_OFF,
     RECORD_MODE_SCHEDULE,
@@ -114,12 +116,6 @@ RECORD_MODE_TO_DVR: dict[str, int] = {
     "schedule": RECORD_MODE_SCHEDULE,
     "manual": RECORD_MODE_MANUAL,
     "off": RECORD_MODE_OFF,
-    # Backward compatibility with legacy option strings
-    "Agendado": RECORD_MODE_SCHEDULE,
-    "Manual / Contínuo": RECORD_MODE_MANUAL,
-    "Desativado": RECORD_MODE_OFF,
-    "agendado": RECORD_MODE_SCHEDULE,
-    "desativado": RECORD_MODE_OFF,
 }
 
 DVR_TO_RECORD_MODE: dict[int, str] = {
@@ -205,26 +201,10 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
         runtime = getattr(self._entry, "runtime_data", None)
         trans: dict[str, str] = getattr(runtime, "translations", {}) if runtime else {}
         prefix = "component.intelbras_dvr.selector.monitor_view_format.options."
-        single_tpl = trans.get(f"{prefix}single_view")
-        range_tpl = trans.get(f"{prefix}range_view")
-        full_tpl = trans.get(f"{prefix}full_view")
-        if single_tpl and range_tpl and full_tpl:
-            return single_tpl, range_tpl, full_tpl
-
-        lang = ""
-        if self.coordinator and self.coordinator.hass:
-            lang = (self.coordinator.hass.config.language or "").lower()
-        if lang.startswith("pt"):
-            return (
-                "Visualização de 1: {name}",
-                "Visualização de {count}: {start}-{end}",
-                "Visualização de {count}",
-            )
-        return (
-            "View 1: {name}",
-            "View {count}: {start}-{end}",
-            "View {count}",
-        )
+        single_tpl = trans.get(f"{prefix}single_view", "View 1: {name}")
+        range_tpl = trans.get(f"{prefix}range_view", "View {count}: {start}-{end}")
+        full_tpl = trans.get(f"{prefix}full_view", "View {count}")
+        return single_tpl, range_tpl, full_tpl
 
     def _rebuild_options(self) -> None:
         """Dynamically build monitor split options from DVR capabilities and active channels."""
@@ -241,8 +221,6 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
             self._label_to_action[label] = action
             self._action_to_label[action] = label
             option_labels.append(label)
-            # Register alternate language aliases for automation compatibility
-            self._label_to_action[f"Visualização de 1: {cam_name}"] = action
             self._label_to_action[f"View 1: {cam_name}"] = action
             self._label_to_action[f"split1:{ch}"] = action
 
@@ -266,7 +244,6 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
                 self._label_to_action[label] = action
                 self._action_to_label[action] = label
                 option_labels.append(label)
-                self._label_to_action[f"Visualização de {split_num}"] = action
                 self._label_to_action[f"View {split_num}"] = action
                 self._label_to_action[mode] = action
                 self._label_to_action[f"{mode}:0"] = action
@@ -284,9 +261,6 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
                     self._label_to_action[label] = action
                     self._action_to_label[action] = label
                     option_labels.append(label)
-                    self._label_to_action[
-                        f"Visualização de {split_num}: {start}-{end}"
-                    ] = action
                     self._label_to_action[f"View {split_num}: {start}-{end}"] = action
                     self._label_to_action[f"{mode}:{group}"] = action
 
@@ -457,11 +431,9 @@ class CameraDayNightSelect(CameraChannelEntity, SelectEntity):
                 ch_data = vio.setdefault(self._channel, {})
                 if prof == 1:
                     ch_data["night_day_night_color"] = val
-                elif prof == 0:
+                elif prof == 2:
                     ch_data["normal_day_night_color"] = val
                 else:
-                    ch_data["day_night_color"] = val
-                if prof == self.coordinator.client.get_active_profile_index(self._channel):
                     ch_data["day_night_color"] = val
                     ch_data["day_night"] = val
                 self._optimistic_option = None
@@ -479,7 +451,7 @@ class CameraDayNightSelect(CameraChannelEntity, SelectEntity):
 
 
 class CameraProfileModeSelect(CameraChannelEntity, SelectEntity):
-    """Select entity for camera profile management mode (Regular, Perfil Fixo, Agendamento, Dia/Noite)."""
+    """Select entity for camera profile management mode (Regular, Fixed, Schedule, Day/Night)."""
 
     entity_description: SelectEntityDescription = PROFILE_MODE_DESCRIPTION
 
@@ -546,7 +518,7 @@ class CameraProfileModeSelect(CameraChannelEntity, SelectEntity):
 
 
 class CameraFixedProfileSelect(CameraChannelEntity, SelectEntity):
-    """Select entity for choosing fixed profile (Dia or Noite) on Intelbras IP cameras."""
+    """Select entity for choosing fixed profile (Day or Night) on Intelbras IP cameras."""
 
     entity_description: SelectEntityDescription = FIXED_PROFILE_DESCRIPTION
 

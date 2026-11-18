@@ -1,0 +1,77 @@
+name: Bug Report / Relato de Problema
+description: Report a bug or issue with the Intelbras DVR integration (requires Diagnostics JSON) / Relatar um erro na integração (exige o JSON de diagnóstico)
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ### Welcome / Bem-vindo(a)!
+        Please fill out all required fields below. Providing the **Home Assistant Diagnostics JSON** is **mandatory** so we can inspect your DVR hardware capabilities, firmware, channels, and user permissions (sensitive data like passwords, host, serial numbers, and MAC addresses are automatically redacted by Home Assistant).
+        ---
+        Por favor, preencha todos os campos obrigatórios abaixo. O envio do **JSON de Diagnóstico do Home Assistant** é **obrigatório** para que possamos analisar as capacidades do seu DVR, firmware, canais e permissões de usuário (dados sensíveis como senha, IP, número de série e MAC já são ocultados automaticamente pelo Home Assistant).
+
+  - type: input
+    id: integration_version
+    attributes:
+      label: Integration Version / Versão da Integração
+      description: Version of the Intelbras DVR custom integration / Versão instalada da integração Intelbras DVR
+      placeholder: "0.8.1"
+    validations:
+      required: true
+
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant Core Version / Versão do Home Assistant
+      description: Your Home Assistant Core version / Versão do seu Home Assistant Core
+      placeholder: "2026.11.x"
+    validations:
+      required: true
+
+  - type: input
+    id: dvr_model
+    attributes:
+      label: DVR / NVR Model & Firmware / Modelo do DVR e Firmware
+      description: E.g., Intelbras iMHDX 3008, MHDX 1108, NVD 1408, etc.
+      placeholder: "iMHDX 3008 (V4.001.00IB003.5)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem Description / Descrição do Problema
+      description: |
+        Describe what happened, what you expected to happen, and steps to reproduce.
+        Descreva o que aconteceu, o comportamento esperado e os passos para reproduzir.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics_json
+    attributes:
+      label: Home Assistant Diagnostics JSON (Required / Obrigatório)
+      description: |
+        **EN:** Go to **Settings > Devices & Services > Intelbras DVR**, click the **three dots (`⋮`)** next to your DVR entry, and select **Download diagnostics**. Open the downloaded `.json` file, copy its entire content (or drag-and-drop the `.json` file here) and paste it below.
+        **PT-BR:** Acesse **Configurações > Dispositivos e Serviços > Intelbras DVR**, clique nos **três pontos (`⋮`)** ao lado do seu DVR e selecione **Baixar diagnóstico**. Abra o arquivo `.json` baixado, copie todo o conteúdo (ou arraste o arquivo `.json` para este campo) e cole abaixo.
+      placeholder: |
+        {
+          "home_assistant": { ... },
+          "data": {
+            "integration_version": "0.8.1",
+            ...
+          }
+        }
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs / Logs Relevantes (Optional / Opcional)
+      description: Paste any relevant lines from Home Assistant logs (`Settings > System > Logs`) / Cole linhas relevantes dos logs do Home Assistant.
+      render: text
+    validations:
+      required: false

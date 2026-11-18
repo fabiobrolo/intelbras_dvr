@@ -334,20 +334,21 @@ get_logs:
           integration: intelbras_dvr
     log_type:
       name: Log Type
-      description: Category of logs to search (All, System, Config, Storage, Alarm, Record, Account, Clear).
+      description: Category of logs to search (all, system, config, storage, alarm, record, account, clear).
       required: false
-      default: "All"
+      default: "all"
       selector:
         select:
+          translation_key: log_type
           options:
-            - "All"
-            - "System"
-            - "Config"
-            - "Storage"
-            - "Alarm"
-            - "Record"
-            - "Account"
-            - "Clear"
+            - "all"
+            - "system"
+            - "config"
+            - "storage"
+            - "alarm"
+            - "record"
+            - "account"
+            - "clear"
     count:
       name: Count
       description: Maximum number of log items to retrieve (1 to 100).

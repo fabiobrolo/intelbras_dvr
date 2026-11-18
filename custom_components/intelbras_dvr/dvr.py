@@ -102,6 +102,7 @@ class IntelbrasClient:
         self._client: httpx.AsyncClient | None = None
         self._request_lock: asyncio.Lock = asyncio.Lock()
         self._saved_video_colors: dict[int, dict[str, int]] = {}
+        self._saved_video_colors_by_profile: dict[int, dict[int, dict[str, int]]] = {}
         self._channel_supports_acutance: set[int] = set()
         self._channel_profiles: dict[int, set[int]] = {}
         self._earliest_date_cache: dict[int, date] = {}
@@ -986,6 +987,7 @@ class IntelbrasClient:
                 val = int(match.group(4))
 
                 self._channel_profiles.setdefault(ch, set()).add(profile)
+                self._video_color_by_profile.setdefault(ch, {}).setdefault(profile, {})[prop] = val
 
                 if profile == 0:
                     colors.setdefault(ch, {})[prop] = val
@@ -1185,6 +1187,109 @@ class IntelbrasClient:
             })
         return sessions
 
+    async def async_validate_user_permissions(
+        self, channels: list[int] | None = None
+    ) -> dict[str, Any]:
+        """Validate whether the configured DVR user has all required permissions and is reusable."""
+        required_system = (
+            "AuthSysCfg",
+            "AuthSysInfo",
+            "AuthManuCtr",
+            "AuthStoreCfg",
+            "AuthEventCfg",
+            "AuthMaintence",
+        )
+        try:
+            resp = await self._get(
+                USER_MANAGER_CGI,
+                params={"action": "getUserInfo", "name": self.username},
+                timeout=6.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("User permission check skipped: %s", exc)
+            return {
+                "checked": False,
+                "username": self.username,
+                "has_all_permissions": True,
+                "sharable": True,
+                "missing_permissions": [],
+            }
+
+        if resp.status_code == 403 or (resp.status_code == 200 and "Error" in resp.text):
+            return {
+                "checked": True,
+                "username": self.username,
+                "group": "user",
+                "is_admin": False,
+                "sharable": True,
+                "authorities_count": 0,
+                "missing_system_permissions": ["AuthUserMag", *required_system],
+                "missing_channel_permissions": [],
+                "missing_permissions": ["AuthUserMag", *required_system],
+                "has_all_permissions": False,
+            }
+
+        if resp.status_code != 200 or "user." not in resp.text:
+            return {
+                "checked": False,
+                "username": self.username,
+                "has_all_permissions": True,
+                "sharable": True,
+                "missing_permissions": [],
+            }
+
+        group = ""
+        sharable = True
+        reserved = False
+        authorities: set[str] = set()
+        auth_pat = re.compile(r"^user\.AuthorityList\[\d+\]=(.+)$")
+
+        for line in resp.text.splitlines():
+            line_str = line.strip()
+            if line_str.startswith("user.Group="):
+                group = line_str.split("=", 1)[1].strip()
+            elif line_str.startswith("user.Sharable="):
+                sharable = line_str.split("=", 1)[1].strip().lower() == "true"
+            elif line_str.startswith("user.Reserved="):
+                reserved = line_str.split("=", 1)[1].strip().lower() == "true"
+            else:
+                m = auth_pat.match(line_str)
+                if m:
+                    perm = m.group(1).strip()
+                    if perm:
+                        authorities.add(perm)
+
+        is_admin = group.lower() == "admin"
+        missing_sys: list[str] = []
+        missing_ch: list[str] = []
+
+        if authorities or not is_admin:
+            for req in required_system:
+                if req not in authorities:
+                    missing_sys.append(req)
+            for ch in sorted(channels or []):
+                mon_key = f"Monitor_{ch + 1:02d}"
+                rep_key = f"Replay_{ch + 1:02d}"
+                if mon_key not in authorities:
+                    missing_ch.append(mon_key)
+                if rep_key not in authorities:
+                    missing_ch.append(rep_key)
+
+        missing_all = missing_sys + missing_ch
+        return {
+            "checked": True,
+            "username": self.username,
+            "group": group or ("admin" if is_admin else "user"),
+            "is_admin": is_admin,
+            "reserved": reserved,
+            "sharable": sharable,
+            "authorities_count": len(authorities),
+            "missing_system_permissions": missing_sys,
+            "missing_channel_permissions": missing_ch,
+            "missing_permissions": missing_all,
+            "has_all_permissions": len(missing_all) == 0,
+        }
+
     async def get_network_interfaces(self) -> list[dict[str, Any]]:
         """Query network interface status, link speed and MAC address via netApp.cgi."""
         resp = await self._get(f"{NET_APP_CGI}?action=getInterfaces")
@@ -1374,8 +1479,16 @@ class IntelbrasClient:
         if b == 0 and s == 0:
             return
         self._saved_video_colors[channel] = dict(colors)
+        prof_map = self._video_color_by_profile.get(channel, {})
+        for prof, p_colors in prof_map.items():
+            pb = int(p_colors.get("Brightness", 0))
+            ps = int(p_colors.get("Saturation", 0))
+            if pb != 0 or ps != 0:
+                self._saved_video_colors_by_profile.setdefault(channel, {})[prof] = dict(p_colors)
 
-    def get_saved_camera_colors(self, channel: int) -> dict[str, int]:
+    def get_saved_camera_colors(
+        self, channel: int, profile: int | None = None
+    ) -> dict[str, int]:
         """Retrieve saved camera picture settings before privacy masking."""
         default_sat = (
             DEFAULT_SATURATION_ACUTANCE
@@ -1389,6 +1502,13 @@ class IntelbrasClient:
             "Hue": DEFAULT_HUE,
             "Acutance": DEFAULT_ACUTANCE,
         }
+        if profile is not None:
+            prof_saved = self._saved_video_colors_by_profile.get(channel, {}).get(profile)
+            if prof_saved and (
+                int(prof_saved.get("Brightness", 0)) != 0
+                or int(prof_saved.get("Saturation", 0)) != 0
+            ):
+                return dict(prof_saved)
         saved = self._saved_video_colors.get(channel)
         if not saved:
             return fallback
@@ -1411,6 +1531,12 @@ class IntelbrasClient:
                             self.save_camera_colors(ch, current_colors[ch])
                 except Exception as exc:  # noqa: BLE001
                     _LOGGER.debug("Could not pre-fetch current colors before mask: %s", exc)
+            for ch in channels:
+                for prof, p_colors in self._video_color_by_profile.get(ch, {}).items():
+                    pb = int(p_colors.get("Brightness", 0))
+                    ps = int(p_colors.get("Saturation", 0))
+                    if pb != 0 or ps != 0:
+                        self._saved_video_colors_by_profile.setdefault(ch, {})[prof] = dict(p_colors)
 
             params: dict[str, Any] = {"action": "setConfig"}
             for ch in channels:
@@ -1429,19 +1555,19 @@ class IntelbrasClient:
 
         params = {"action": "setConfig"}
         for ch in channels:
-            saved = self.get_saved_camera_colors(ch)
             profs = self.get_channel_profiles(ch)
-            b = saved.get("Brightness", DEFAULT_BRIGHTNESS)
-            c = saved.get("Contrast", DEFAULT_CONTRAST)
-            s = saved.get(
-                "Saturation",
-                DEFAULT_SATURATION_ACUTANCE
-                if self.channel_supports_acutance(ch)
-                else DEFAULT_SATURATION_ANALOG,
-            )
-            h = saved.get("Hue", DEFAULT_HUE)
-            a = saved.get("Acutance", DEFAULT_ACUTANCE)
             for prof in profs:
+                saved = self.get_saved_camera_colors(ch, profile=prof)
+                b = saved.get("Brightness", DEFAULT_BRIGHTNESS)
+                c = saved.get("Contrast", DEFAULT_CONTRAST)
+                s = saved.get(
+                    "Saturation",
+                    DEFAULT_SATURATION_ACUTANCE
+                    if self.channel_supports_acutance(ch)
+                    else DEFAULT_SATURATION_ANALOG,
+                )
+                h = saved.get("Hue", DEFAULT_HUE)
+                a = saved.get("Acutance", DEFAULT_ACUTANCE)
                 prefix = f"VideoColor[{ch}][{prof}]"
                 params[f"{prefix}.Brightness"] = b
                 params[f"{prefix}.Contrast"] = c
@@ -1907,7 +2033,13 @@ class IntelbrasClient:
         return resp.status_code == 200 and "ok" in resp.text.lower()
 
     def get_day_night_mode(self, channel: int, profile: int | None = None) -> str:
-        """Return Day/Night mode string ('black_white', 'color', 'schedule') for a channel and profile."""
+        """Return Day/Night mode string ('black_white', 'color', 'schedule') for a channel and profile.
+
+        Profile mapping on Intelbras/Dahua DVR:
+        - 0 (Day): Root VideoInOptions[ch].DayNightColor
+        - 1 (Night): VideoInOptions[ch].NightOptions.DayNightColor
+        - 2 (Regular): VideoInOptions[ch].NormalOptions.DayNightColor
+        """
         vio = self._video_in_options.get(channel, {})
         has_profiles = vio.get("has_profile_options", False)
         prof = profile if profile is not None else self.get_active_profile_index(channel)
@@ -1915,10 +2047,10 @@ class IntelbrasClient:
         if has_profiles:
             if prof == 1:
                 val = vio.get("night_day_night_color", vio.get("day_night_color", 1))
-            elif prof == 0:
+            elif prof == 2:
                 val = vio.get("normal_day_night_color", vio.get("day_night_color", 1))
             else:
-                val = vio.get("day_night_color", 1)
+                val = vio.get("day_night_color", vio.get("day_night", 1))
         else:
             val = vio.get("day_night_color", vio.get("day_night", 1))
 
@@ -1928,7 +2060,13 @@ class IntelbrasClient:
     async def set_day_night_mode(
         self, channel: int, mode: str, profile: int | None = None
     ) -> bool:
-        """Set Day/Night mode for a camera channel (0=Color, 1=Schedule, 2=BlackWhite) and specific profile."""
+        """Set Day/Night mode for a camera channel (0=Color, 1=Schedule, 2=BlackWhite) and specific profile.
+
+        Profile mapping on Intelbras/Dahua DVR:
+        - 0 (Day): Root VideoInOptions[ch].DayNightColor
+        - 1 (Night): VideoInOptions[ch].NightOptions.DayNightColor
+        - 2 (Regular): VideoInOptions[ch].NormalOptions.DayNightColor
+        """
         mode_map = {"color": 0, "schedule": 1, "auto": 1, "black_white": 2}
         val = mode_map.get(mode.lower(), 1)
         vio_ch = self._video_in_options.setdefault(channel, {})
@@ -1939,12 +2077,8 @@ class IntelbrasClient:
         if has_profiles:
             if prof == 1:
                 params[f"VideoInOptions[{channel}].NightOptions.DayNightColor"] = val
-                if prof == self.get_active_profile_index(channel):
-                    params[f"VideoInOptions[{channel}].DayNightColor"] = val
-            elif prof == 0:
+            elif prof == 2:
                 params[f"VideoInOptions[{channel}].NormalOptions.DayNightColor"] = val
-                if prof == self.get_active_profile_index(channel):
-                    params[f"VideoInOptions[{channel}].DayNightColor"] = val
             else:
                 params[f"VideoInOptions[{channel}].DayNightColor"] = val
         else:
@@ -1959,11 +2093,9 @@ class IntelbrasClient:
             if has_profiles:
                 if prof == 1:
                     vio_ch["night_day_night_color"] = val
-                elif prof == 0:
+                elif prof == 2:
                     vio_ch["normal_day_night_color"] = val
                 else:
-                    vio_ch["day_night_color"] = val
-                if prof == self.get_active_profile_index(channel):
                     vio_ch["day_night_color"] = val
                     vio_ch["day_night"] = val
             else:
@@ -2029,6 +2161,10 @@ class IntelbrasClient:
         """Return the current light compensation mode for a camera channel and profile.
 
         Possible values: 'disabled', 'blc', 'hlc', 'wdr'.
+        Profile mapping on Intelbras/Dahua DVR:
+        - 0 (Day / Period 1): Root VideoInOptions[ch].*
+        - 1 (Night / Period 2): VideoInOptions[ch].NightOptions.*
+        - 2 (Regular): VideoInOptions[ch].NormalOptions.*
         """
         vio = self._video_in_options.get(channel, {})
         has_profiles = vio.get("has_profile_options", False)
@@ -2039,7 +2175,7 @@ class IntelbrasClient:
                 wdr = vio.get("night_wdr_mode", 0)
                 hlc = vio.get("night_glare_inhibition", 0)
                 blc = vio.get("night_backlight", 0)
-            elif prof == 0:
+            elif prof == 2:
                 wdr = vio.get("normal_wdr_mode", 0)
                 hlc = vio.get("normal_glare_inhibition", 0)
                 blc = vio.get("normal_backlight", 0)
@@ -2076,27 +2212,17 @@ class IntelbrasClient:
 
         params: dict[str, Any] = {"action": "setConfig"}
         if has_profiles:
-            if prof == 1:  # Night
+            if prof == 1:  # Night / Period 2
                 params[f"VideoInOptions[{channel}].NightOptions.Backlight"] = blc_val
                 params[f"VideoInOptions[{channel}].NightOptions.GlareInhibition"] = hlc_val
                 params[f"VideoInOptions[{channel}].NightOptions.WideDynamicRangeMode"] = wdr_mode
                 params[f"VideoInOptions[{channel}].NightOptions.WideDynamicRange"] = wdr_val
-                if prof == self.get_active_profile_index(channel):
-                    params[f"VideoInOptions[{channel}].Backlight"] = blc_val
-                    params[f"VideoInOptions[{channel}].GlareInhibition"] = hlc_val
-                    params[f"VideoInOptions[{channel}].WideDynamicRangeMode"] = wdr_mode
-                    params[f"VideoInOptions[{channel}].WideDynamicRange"] = wdr_val
-            elif prof == 0:  # Day / Normal
+            elif prof == 2:  # Regular
                 params[f"VideoInOptions[{channel}].NormalOptions.Backlight"] = blc_val
                 params[f"VideoInOptions[{channel}].NormalOptions.GlareInhibition"] = hlc_val
                 params[f"VideoInOptions[{channel}].NormalOptions.WideDynamicRangeMode"] = wdr_mode
                 params[f"VideoInOptions[{channel}].NormalOptions.WideDynamicRange"] = wdr_val
-                if prof == self.get_active_profile_index(channel):
-                    params[f"VideoInOptions[{channel}].Backlight"] = blc_val
-                    params[f"VideoInOptions[{channel}].GlareInhibition"] = hlc_val
-                    params[f"VideoInOptions[{channel}].WideDynamicRangeMode"] = wdr_mode
-                    params[f"VideoInOptions[{channel}].WideDynamicRange"] = wdr_val
-            else:  # Regular
+            else:  # Day / Period 1
                 params[f"VideoInOptions[{channel}].Backlight"] = blc_val
                 params[f"VideoInOptions[{channel}].GlareInhibition"] = hlc_val
                 params[f"VideoInOptions[{channel}].WideDynamicRangeMode"] = wdr_mode
@@ -2119,17 +2245,12 @@ class IntelbrasClient:
                     vio_ch["night_glare_inhibition"] = hlc_val
                     vio_ch["night_wdr_mode"] = wdr_mode
                     vio_ch["night_wdr_val"] = wdr_val
-                elif prof == 0:
+                elif prof == 2:
                     vio_ch["normal_backlight"] = blc_val
                     vio_ch["normal_glare_inhibition"] = hlc_val
                     vio_ch["normal_wdr_mode"] = wdr_mode
                     vio_ch["normal_wdr_val"] = wdr_val
                 else:
-                    vio_ch["backlight"] = blc_val
-                    vio_ch["glare_inhibition"] = hlc_val
-                    vio_ch["wdr_mode"] = wdr_mode
-                    vio_ch["wdr_val"] = wdr_val
-                if prof == self.get_active_profile_index(channel):
                     vio_ch["backlight"] = blc_val
                     vio_ch["glare_inhibition"] = hlc_val
                     vio_ch["wdr_mode"] = wdr_mode
@@ -2240,7 +2361,7 @@ class IntelbrasClient:
         period_idx: int,
         active: bool,
     ) -> bool:
-        """Enable or disable Período 1 (idx 0) or Período 2 (idx 1) on an analog channel."""
+        """Enable or disable Period 1 (idx 0) or Period 2 (idx 1) on an analog channel."""
         ch_periods = self._video_color_periods.setdefault(channel, {})
         p0 = ch_periods.get(0, {"active": True, "start": dt_time(6, 0), "end": dt_time(18, 0)})
         p1 = ch_periods.get(1, {"active": False, "start": dt_time(18, 0), "end": dt_time(6, 0)})
@@ -2259,6 +2380,8 @@ class IntelbrasClient:
                 )
                 if is_24h or (p0_start == p1_start and p0_end == p1_end):
                     p0_start = dt_time(6, 0)
+                    p0_end = dt_time(18, 0)
+                elif p0_end >= dt_time(23, 59, 58):
                     p0_end = dt_time(18, 0)
                 # Period 2 is always the complementary interval of Period 1
                 p1_start = p0_end
@@ -2285,41 +2408,59 @@ class IntelbrasClient:
                 p1_end = dt_time(23, 59, 59)
             else:
                 p1_act = p1.get("active", False)
+                if p1_act and p0_end >= dt_time(23, 59, 58):
+                    p0_end = dt_time(18, 0)
+                    p1_start = p0_end
+                    p1_end = p0_start
 
-        p0_end_str = (
-            "24:00:00"
-            if (p0_end.hour == 23 and p0_end.minute == 59 and p0_end.second >= 58)
-            else p0_end.strftime("%H:%M:%S")
-        )
-        p1_end_str = (
-            "24:00:00"
-            if (p1_end.hour == 23 and p1_end.minute == 59 and p1_end.second >= 58)
-            else p1_end.strftime("%H:%M:%S")
-        )
+        if not p1_act:
+            p0_end_str = (
+                "24:00:00"
+                if (p0_end.hour == 23 and p0_end.minute == 59 and p0_end.second >= 58)
+                else p0_end.strftime("%H:%M:%S")
+            )
+            p1_end_str = (
+                "24:00:00"
+                if (p1_end.hour == 23 and p1_end.minute == 59 and p1_end.second >= 58)
+                else p1_end.strftime("%H:%M:%S")
+            )
+        else:
+            p0_end_str = p0_end.strftime("%H:%M:%S")
+            p1_end_str = p1_end.strftime("%H:%M:%S")
 
         p0_str = f"{1 if p0_act else 0}%20{p0_start.strftime('%H:%M:%S')}-{p0_end_str}"
         p1_str = f"{1 if p1_act else 0}%20{p1_start.strftime('%H:%M:%S')}-{p1_end_str}"
 
-        ch_colors = self._video_color.get(channel, {})
-        bright = ch_colors.get("Brightness", DEFAULT_BRIGHTNESS)
-        contrast = ch_colors.get("Contrast", DEFAULT_CONTRAST)
-        hue = ch_colors.get("Hue", DEFAULT_HUE)
-        sat = ch_colors.get("Saturation", DEFAULT_SATURATION_ANALOG)
-        acut = ch_colors.get("Acutance", DEFAULT_ACUTANCE)
+        prof_colors = self._video_color_by_profile.get(channel, {})
+        base_colors = self._video_color.get(channel, {})
+        c0 = prof_colors.get(0) or base_colors
+        c1 = prof_colors.get(1) or c0
+
+        b0 = c0.get("Brightness", DEFAULT_BRIGHTNESS)
+        con0 = c0.get("Contrast", DEFAULT_CONTRAST)
+        h0 = c0.get("Hue", DEFAULT_HUE)
+        s0 = c0.get("Saturation", DEFAULT_SATURATION_ANALOG)
+        a0 = c0.get("Acutance", DEFAULT_ACUTANCE)
+
+        b1 = c1.get("Brightness", DEFAULT_BRIGHTNESS)
+        con1 = c1.get("Contrast", DEFAULT_CONTRAST)
+        h1 = c1.get("Hue", DEFAULT_HUE)
+        s1 = c1.get("Saturation", DEFAULT_SATURATION_ANALOG)
+        a1 = c1.get("Acutance", DEFAULT_ACUTANCE)
 
         qs = [
             "action=setConfig",
-            f"VideoColor[{channel}][0].Brightness={bright}",
-            f"VideoColor[{channel}][0].Contrast={contrast}",
-            f"VideoColor[{channel}][0].Hue={hue}",
-            f"VideoColor[{channel}][0].Saturation={sat}",
-            f"VideoColor[{channel}][0].Acutance={acut}",
+            f"VideoColor[{channel}][0].Brightness={b0}",
+            f"VideoColor[{channel}][0].Contrast={con0}",
+            f"VideoColor[{channel}][0].Hue={h0}",
+            f"VideoColor[{channel}][0].Saturation={s0}",
+            f"VideoColor[{channel}][0].Acutance={a0}",
             f"VideoColor[{channel}][0].TimeSection={p0_str}",
-            f"VideoColor[{channel}][1].Brightness={bright}",
-            f"VideoColor[{channel}][1].Contrast={contrast}",
-            f"VideoColor[{channel}][1].Hue={hue}",
-            f"VideoColor[{channel}][1].Saturation={sat}",
-            f"VideoColor[{channel}][1].Acutance={acut}",
+            f"VideoColor[{channel}][1].Brightness={b1}",
+            f"VideoColor[{channel}][1].Contrast={con1}",
+            f"VideoColor[{channel}][1].Hue={h1}",
+            f"VideoColor[{channel}][1].Saturation={s1}",
+            f"VideoColor[{channel}][1].Acutance={a1}",
             f"VideoColor[{channel}][1].TimeSection={p1_str}",
         ]
         url = f"{CONFIG_MANAGER_CGI}?" + "&".join(qs)
@@ -2337,14 +2478,40 @@ class IntelbrasClient:
         start_time: dt_time | None = None,
         end_time: dt_time | None = None,
     ) -> bool:
-        """Update start or end time for Período 1 (idx 0) or Período 2 (idx 1) on an analog channel."""
+        """Update start or end time for Period 1 (idx 0) or Period 2 (idx 1) on an analog channel."""
         ch_periods = self._video_color_periods.setdefault(channel, {})
         p0 = ch_periods.get(0, {"active": True, "start": dt_time(6, 0), "end": dt_time(18, 0)})
         p1 = ch_periods.get(1, {"active": False, "start": dt_time(18, 0), "end": dt_time(6, 0)})
 
+        if start_time is not None and start_time.second == 59 and (start_time.hour, start_time.minute) != (23, 59):
+            start_time = dt_time(start_time.hour, start_time.minute, 0)
+        if end_time is not None and end_time.second == 59 and (end_time.hour, end_time.minute) != (23, 59):
+            end_time = dt_time(end_time.hour, end_time.minute, 0)
+
         if period_idx == 0:
-            p0_start = start_time if start_time is not None else p0.get("start", dt_time(6, 0))
-            p0_end = end_time if end_time is not None else p0.get("end", dt_time(18, 0))
+            old_p0_start = p0.get("start", dt_time(6, 0))
+            old_p0_end = p0.get("end", dt_time(18, 0))
+            p0_start = start_time if start_time is not None else old_p0_start
+            p0_end = end_time if end_time is not None else old_p0_end
+
+            # If the channel was in 24h single-period mode (00:00:00 - 23:59:59) and the user
+            # edits Period 1 Start first, initialize Period 1 End to 18:00:00 so the DVR firmware
+            # never receives "24:00:00" alongside an active Period 2 (which resets all channels).
+            if start_time is not None and end_time is None and start_time != dt_time(0, 0):
+                if old_p0_end >= dt_time(23, 59, 58) or old_p0_end == dt_time(0, 0):
+                    p0_end = dt_time(18, 0) if p0_start != dt_time(18, 0) else dt_time(6, 0)
+
+            # Conversely, if the user edits Period 1 End first while Start was 00:00:00 in 24h mode:
+            if (
+                end_time is not None
+                and start_time is None
+                and end_time < dt_time(23, 59, 58)
+                and old_p0_start == dt_time(0, 0)
+                and old_p0_end >= dt_time(23, 59, 58)
+                and not p1.get("active", False)
+            ):
+                p0_start = dt_time(6, 0) if p0_end != dt_time(6, 0) else dt_time(18, 0)
+
             if p0_start == p0_end:
                 return False
 
@@ -2357,13 +2524,30 @@ class IntelbrasClient:
                 p1_start = dt_time(0, 0)
                 p1_end = dt_time(23, 59, 59)
             else:
+                if p0_end >= dt_time(23, 59, 58):
+                    p0_end = dt_time(23, 59, 0)
                 p0_act = True
                 p1_act = True
                 p1_start = p0_end
                 p1_end = p0_start
         else:
-            p1_start = start_time if start_time is not None else p1.get("start", dt_time(18, 0))
-            p1_end = end_time if end_time is not None else p1.get("end", dt_time(6, 0))
+            old_p1_start = p1.get("start", dt_time(18, 0))
+            old_p1_end = p1.get("end", dt_time(6, 0))
+            p1_start = start_time if start_time is not None else old_p1_start
+            p1_end = end_time if end_time is not None else old_p1_end
+
+            if start_time is not None and end_time is None:
+                if old_p1_end >= dt_time(23, 59, 58) or old_p1_end == dt_time(0, 0):
+                    p1_end = dt_time(6, 0) if p1_start != dt_time(6, 0) else dt_time(18, 0)
+            if end_time is not None and start_time is None:
+                if old_p1_start >= dt_time(23, 59, 58) or old_p1_start == dt_time(0, 0):
+                    p1_start = dt_time(18, 0) if p1_end != dt_time(18, 0) else dt_time(6, 0)
+
+            if p1_start >= dt_time(23, 59, 58):
+                p1_start = dt_time(23, 59, 0)
+            if p1_end >= dt_time(23, 59, 58):
+                p1_end = dt_time(23, 59, 0)
+
             if p1_start == p1_end:
                 return False
 
@@ -2372,40 +2556,54 @@ class IntelbrasClient:
             p0_end = p1_start
             p0_start = p1_end
 
-        p0_end_str = (
-            "24:00:00"
-            if (p0_end.hour == 23 and p0_end.minute == 59 and p0_end.second >= 58)
-            else p0_end.strftime("%H:%M:%S")
-        )
-        p1_end_str = (
-            "24:00:00"
-            if (p1_end.hour == 23 and p1_end.minute == 59 and p1_end.second >= 58)
-            else p1_end.strftime("%H:%M:%S")
-        )
+        if not p1_act:
+            p0_end_str = (
+                "24:00:00"
+                if (p0_end.hour == 23 and p0_end.minute == 59 and p0_end.second >= 58)
+                else p0_end.strftime("%H:%M:%S")
+            )
+            p1_end_str = (
+                "24:00:00"
+                if (p1_end.hour == 23 and p1_end.minute == 59 and p1_end.second >= 58)
+                else p1_end.strftime("%H:%M:%S")
+            )
+        else:
+            p0_end_str = p0_end.strftime("%H:%M:%S")
+            p1_end_str = p1_end.strftime("%H:%M:%S")
 
         p0_str = f"{1 if p0_act else 0}%20{p0_start.strftime('%H:%M:%S')}-{p0_end_str}"
         p1_str = f"{1 if p1_act else 0}%20{p1_start.strftime('%H:%M:%S')}-{p1_end_str}"
 
-        ch_colors = self._video_color.get(channel, {})
-        bright = ch_colors.get("Brightness", DEFAULT_BRIGHTNESS)
-        contrast = ch_colors.get("Contrast", DEFAULT_CONTRAST)
-        hue = ch_colors.get("Hue", DEFAULT_HUE)
-        sat = ch_colors.get("Saturation", DEFAULT_SATURATION_ANALOG)
-        acut = ch_colors.get("Acutance", DEFAULT_ACUTANCE)
+        prof_colors = self._video_color_by_profile.get(channel, {})
+        base_colors = self._video_color.get(channel, {})
+        c0 = prof_colors.get(0) or base_colors
+        c1 = prof_colors.get(1) or c0
+
+        b0 = c0.get("Brightness", DEFAULT_BRIGHTNESS)
+        con0 = c0.get("Contrast", DEFAULT_CONTRAST)
+        h0 = c0.get("Hue", DEFAULT_HUE)
+        s0 = c0.get("Saturation", DEFAULT_SATURATION_ANALOG)
+        a0 = c0.get("Acutance", DEFAULT_ACUTANCE)
+
+        b1 = c1.get("Brightness", DEFAULT_BRIGHTNESS)
+        con1 = c1.get("Contrast", DEFAULT_CONTRAST)
+        h1 = c1.get("Hue", DEFAULT_HUE)
+        s1 = c1.get("Saturation", DEFAULT_SATURATION_ANALOG)
+        a1 = c1.get("Acutance", DEFAULT_ACUTANCE)
 
         qs = [
             "action=setConfig",
-            f"VideoColor[{channel}][0].Brightness={bright}",
-            f"VideoColor[{channel}][0].Contrast={contrast}",
-            f"VideoColor[{channel}][0].Hue={hue}",
-            f"VideoColor[{channel}][0].Saturation={sat}",
-            f"VideoColor[{channel}][0].Acutance={acut}",
+            f"VideoColor[{channel}][0].Brightness={b0}",
+            f"VideoColor[{channel}][0].Contrast={con0}",
+            f"VideoColor[{channel}][0].Hue={h0}",
+            f"VideoColor[{channel}][0].Saturation={s0}",
+            f"VideoColor[{channel}][0].Acutance={a0}",
             f"VideoColor[{channel}][0].TimeSection={p0_str}",
-            f"VideoColor[{channel}][1].Brightness={bright}",
-            f"VideoColor[{channel}][1].Contrast={contrast}",
-            f"VideoColor[{channel}][1].Hue={hue}",
-            f"VideoColor[{channel}][1].Saturation={sat}",
-            f"VideoColor[{channel}][1].Acutance={acut}",
+            f"VideoColor[{channel}][1].Brightness={b1}",
+            f"VideoColor[{channel}][1].Contrast={con1}",
+            f"VideoColor[{channel}][1].Hue={h1}",
+            f"VideoColor[{channel}][1].Saturation={s1}",
+            f"VideoColor[{channel}][1].Acutance={a1}",
             f"VideoColor[{channel}][1].TimeSection={p1_str}",
         ]
         url = f"{CONFIG_MANAGER_CGI}?" + "&".join(qs)

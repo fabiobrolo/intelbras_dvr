@@ -52,6 +52,8 @@ ACTIVE_USERS_DESCRIPTION = SensorEntityDescription(
 STORAGE_STATUS_DESCRIPTION = SensorEntityDescription(
     key="storage_status",
     translation_key="storage_status",
+    device_class=SensorDeviceClass.ENUM,
+    options=["normal", "error", "no_disk", "read_only", "unknown"],
     icon="mdi:harddisk",
     entity_category=EntityCategory.DIAGNOSTIC,
 )
@@ -75,6 +77,8 @@ SYSTEM_TIME_DESCRIPTION = SensorEntityDescription(
 MONITOR_MODE_DESCRIPTION = SensorEntityDescription(
     key="monitor_mode",
     translation_key="monitor_mode",
+    device_class=SensorDeviceClass.ENUM,
+    options=["split1", "split4", "split8", "split9", "split16", "split25", "split36"],
     icon="mdi:monitor",
 )
 
@@ -393,7 +397,18 @@ class DVRStorageStatusSensor(DVREntity, SensorEntity):
     def native_value(self) -> str:
         """Return overall disk status."""
         diag = (self.coordinator.data or {}).get("storage_diagnostics", {})
-        return str(diag.get("overall_state", "Normal"))
+        raw = str(diag.get("overall_state", "Normal")).strip().lower()
+        state_map = {
+            "normal": "normal",
+            "success": "normal",
+            "ok": "normal",
+            "error": "error",
+            "nodisk": "no_disk",
+            "no_disk": "no_disk",
+            "readonly": "read_only",
+            "read_only": "read_only",
+        }
+        return state_map.get(raw, "unknown")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 if TYPE_CHECKING:
@@ -17,6 +18,7 @@ from .const import (
     CONF_FEATURES,
     DEFAULT_BRIGHTNESS,
     DEFAULT_SATURATION_ACUTANCE,
+    DOMAIN,
     CameraFeature,
 )
 from .coordinator import IntelbrasCoordinator, IntelbrasEventCoordinator
@@ -438,7 +440,7 @@ class CameraTimeTitleOverlaySwitch(CameraChannelEntity, SwitchEntity):
 
 
 class CameraPeriod1ActiveSwitch(CameraChannelEntity, SwitchEntity):
-    """Switch to enable or disable Período 1 for an analog camera."""
+    """Switch to enable or disable Period 1 for an analog camera."""
 
     entity_description: SwitchEntityDescription = PERIOD_1_ACTIVE_DESCRIPTION
 
@@ -449,7 +451,7 @@ class CameraPeriod1ActiveSwitch(CameraChannelEntity, SwitchEntity):
         channel: int,
         channel_name: str,
     ) -> None:
-        """Initialise Período 1 Active switch."""
+        """Initialise Period 1 Active switch."""
         super().__init__(coordinator, entry, channel, channel_name)
         self._attr_unique_id = f"{entry.entry_id}_ch{channel}_period_1_active"
         self._optimistic_state: bool | None = None
@@ -488,7 +490,7 @@ class CameraPeriod1ActiveSwitch(CameraChannelEntity, SwitchEntity):
 
 
 class CameraPeriod2ActiveSwitch(CameraChannelEntity, SwitchEntity):
-    """Switch to enable or disable Período 2 for an analog camera."""
+    """Switch to enable or disable Period 2 for an analog camera."""
 
     entity_description: SwitchEntityDescription = PERIOD_2_ACTIVE_DESCRIPTION
 
@@ -499,7 +501,7 @@ class CameraPeriod2ActiveSwitch(CameraChannelEntity, SwitchEntity):
         channel: int,
         channel_name: str,
     ) -> None:
-        """Initialise Período 2 Active switch."""
+        """Initialise Period 2 Active switch."""
         super().__init__(coordinator, entry, channel, channel_name)
         self._attr_unique_id = f"{entry.entry_id}_ch{channel}_period_2_active"
         self._optimistic_state: bool | None = None

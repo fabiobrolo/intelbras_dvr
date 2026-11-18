@@ -151,6 +151,18 @@
         "home": "Posição inicial (Home)",
         "auto_scan": "Varredura automática"
       }
+    },
+    "log_type": {
+      "options": {
+        "all": "Todos",
+        "system": "Sistema",
+        "config": "Configuração",
+        "storage": "Armazenamento",
+        "alarm": "Alarme / Evento",
+        "record": "Gravação",
+        "account": "Conta / Usuário",
+        "clear": "Limpeza de log"
+      }
     }
   },
   "entity": {
@@ -371,7 +383,14 @@
         "name": "Usuários conectados"
       },
       "storage_status": {
-        "name": "Status do HD"
+        "name": "Status do HD",
+        "state": {
+          "normal": "Normal",
+          "error": "Erro",
+          "no_disk": "Sem disco",
+          "read_only": "Somente leitura",
+          "unknown": "Desconhecido"
+        }
       },
       "network_speed": {
         "name": "Velocidade da rede"
@@ -503,12 +522,29 @@
     },
     "image_enhancement_failed": {
       "message": "Falha ao definir o realce de imagem no DVR."
+    },
+    "set_analog_period_active_failed": {
+      "message": "Falha ao configurar o estado do Período {period} no canal {channel}."
+    },
+    "analog_period_same_start_end": {
+      "message": "O horário de início e término do período não podem ser iguais."
+    },
+    "set_analog_period_time_failed": {
+      "message": "Falha ao atualizar o horário do Período {period} no canal {channel}."
     }
   },
   "issues": {
     "auth_retrying": {
       "title": "Tentando reautenticar no DVR ({host})",
       "description": "O Home Assistant recebeu erros repetidos de autenticação (HTTP 401/403) do DVR Intelbras em {host}. A integração está aguardando intervalos crescentes entre as tentativas para evitar bloqueio da conta no DVR e se recuperará automaticamente assim que a autenticação voltar a funcionar.\n\nSe você alterou a senha ou as permissões do usuário no DVR, abra o menu da integração e selecione **Reconfigurar** para atualizar as credenciais imediatamente."
+    },
+    "insufficient_permissions": {
+      "title": "Usuário '{username}' sem permissões completas no DVR ({host})",
+      "description": "A conta de usuário **{username}** no DVR `{host}` não possui todas as permissões necessárias para o funcionamento completo da integração.\n\n**Permissões ausentes:** `{missing_permissions}`\n\nAcesse a interface web do DVR (**Sistema > Conta > Conta**), habilite todas as permissões de sistema e canais para **{username}**, ou selecione **Reconfigurar** no Home Assistant para utilizar uma conta de administrador."
+    },
+    "user_not_sharable": {
+      "title": "Usuário '{username}' não está marcado como reutilizável no DVR ({host})",
+      "description": "A conta de usuário **{username}** no DVR `{host}` está com a opção **Reutilizável** (`Sharable`) desmarcada. Isso pode causar quedas de sessão ou conflitos quando múltiplos fluxos de vídeo ou clientes acessam o DVR simultaneamente.\n\nAcesse a interface web do DVR (**Sistema > Conta > Conta**), edite o usuário **{username}** e marque a opção **Reutilizável**."
     }
   },
   "services": {

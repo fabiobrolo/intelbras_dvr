@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-import functools
-import json
 import logging
-from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
@@ -23,6 +20,7 @@ from homeassistant.helpers import (
     device_registry as dr,
     entity_registry as er,
     issue_registry as ir,
+    translation,
 )
 from homeassistant.helpers.selector import (
     SelectOptionDict,
@@ -74,7 +72,6 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
         self._selected_channels: list[int] = []
         self._system_caps: dict[str, bool] = {}
         self._reauth_entry: ConfigEntry | None = None
-        self._system_caps: dict[str, bool] = {}
 
     # ------------------------------------------------------------------
     # Step 1 – credentials
@@ -243,7 +240,9 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         default_features = _default_features(has_ptz, self._system_caps)
-        feature_options = _feature_options(has_ptz, self._system_caps, self.hass)
+        feature_options = await _async_feature_options(
+            self.hass, has_ptz, self._system_caps
+        )
 
         schema_dict: dict[Any, Any] = {
             vol.Optional(
@@ -313,6 +312,12 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                     ir.async_delete_issue(
                         self.hass, DOMAIN, f"auth_retrying_{entry.entry_id}"
                     )
+                    ir.async_delete_issue(
+                        self.hass, DOMAIN, f"insufficient_permissions_{entry.entry_id}"
+                    )
+                    ir.async_delete_issue(
+                        self.hass, DOMAIN, f"user_not_sharable_{entry.entry_id}"
+                    )
                     return self.async_update_reload_and_abort(
                         entry,
                         data_updates={
@@ -376,6 +381,12 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                     )
                     ir.async_delete_issue(
                         self.hass, DOMAIN, f"auth_retrying_{entry.entry_id}"
+                    )
+                    ir.async_delete_issue(
+                        self.hass, DOMAIN, f"insufficient_permissions_{entry.entry_id}"
+                    )
+                    ir.async_delete_issue(
+                        self.hass, DOMAIN, f"user_not_sharable_{entry.entry_id}"
                     )
                     return self.async_update_reload_and_abort(
                         entry,
@@ -682,12 +693,15 @@ class IntelbrasDVROptionsFlow(OptionsFlow):
         if self.config_entry.data.get(CONF_MONITOR_EVENTS, True):
             current_enabled.append(CONF_MONITOR_EVENTS)
 
+        feature_options = await _async_feature_options(
+            self.hass, has_ptz, self._system_caps
+        )
         options_schema: dict[Any, Any] = {
             vol.Optional(
                 CONF_FEATURES, default=current_enabled
             ): SelectSelector(
                 SelectSelectorConfig(
-                    options=_feature_options(has_ptz, self._system_caps, self.hass),
+                    options=feature_options,
                     translation_key="features",
                     multiple=True,
                     mode=SelectSelectorMode.LIST,
@@ -730,43 +744,23 @@ def _channel_options(
     return result
 
 
-@functools.lru_cache(maxsize=8)
-def _load_translations(lang: str) -> dict[str, str]:
-    """Load selector feature options translation for a given language."""
-    base_dir = Path(__file__).parent / "translations"
-    candidates = [
-        base_dir / f"{lang}.json",
-        base_dir / f"{lang.split('-')[0]}.json" if "-" in lang else None,
-        base_dir / "en.json",
-        Path(__file__).parent / "strings.json",
-    ]
-    for p in candidates:
-        if p and p.is_file():
-            try:
-                with open(p, encoding="utf-8") as f:
-                    data = json.load(f)
-                    opts = (
-                        data.get("selector", {})
-                        .get("features", {})
-                        .get("options", {})
-                    )
-                    if opts:
-                        return opts
-            except Exception:
-                continue
-    return {}
-
-
-def _feature_options(
+async def _async_feature_options(
+    hass: HomeAssistant,
     has_ptz: bool,
     system_caps: dict[str, bool] | None = None,
-    hass: HomeAssistant | None = None,
 ) -> list[SelectOptionDict]:
     """Build the SelectSelector options list for feature selection with translated labels."""
     caps = system_caps or {}
-    lang = hass.config.language if hass and hasattr(hass, "config") else "pt-BR"
-    translations = _load_translations(lang)
+    lang = hass.config.language or "en"
+    trans: dict[str, str] = {}
+    try:
+        trans = await translation.async_get_translations(
+            hass, lang, "selector", [DOMAIN]
+        )
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.debug("Could not load selector translations for %s: %s", lang, exc)
 
+    prefix = f"component.{DOMAIN}.selector.features.options."
     keys = [
         f
         for f in ALL_CAMERA_FEATURES
@@ -783,7 +777,7 @@ def _feature_options(
     return [
         SelectOptionDict(
             value=k,
-            label=translations.get(k, k),
+            label=trans.get(f"{prefix}{k}", k),
         )
         for k in keys
     ]

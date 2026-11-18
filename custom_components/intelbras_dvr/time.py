@@ -86,12 +86,12 @@ async def async_setup_entry(
         if not profiles_enabled:
             continue
 
-        # Intelbras IP cameras: Agendamento Day Start and Day End
+        # Intelbras IP cameras: Schedule Day Start and Day End
         if coordinator.is_intelbras_ip(ch):
             entities.append(CameraDayStartTimeEntity(coordinator, entry, ch, name))
             entities.append(CameraDayEndTimeEntity(coordinator, entry, ch, name))
 
-        # Analog cameras: Período 1 e Período 2 (Início e Término)
+        # Analog cameras: Period 1 and Period 2 (Start and End)
         elif coordinator.is_analog(ch):
             entities.append(
                 CameraAnalogPeriodTimeEntity(
@@ -200,7 +200,7 @@ class CameraDayEndTimeEntity(CameraChannelEntity, TimeEntity):
 
 
 class CameraAnalogPeriodTimeEntity(CameraChannelEntity, TimeEntity):
-    """Time entity configuring start or end time for Período 1 or 2 on an analog camera."""
+    """Time entity configuring start or end time for Period 1 or 2 on an analog camera."""
 
     def __init__(
         self,

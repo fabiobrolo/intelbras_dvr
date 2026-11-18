@@ -151,6 +151,18 @@
         "home": "Home position",
         "auto_scan": "Auto scan"
       }
+    },
+    "log_type": {
+      "options": {
+        "all": "All",
+        "system": "System",
+        "config": "Configuration",
+        "storage": "Storage",
+        "alarm": "Alarm / Event",
+        "record": "Recording",
+        "account": "Account",
+        "clear": "Log cleared"
+      }
     }
   },
   "entity": {
@@ -371,7 +383,14 @@
         "name": "Active users"
       },
       "storage_status": {
-        "name": "Storage status"
+        "name": "Storage status",
+        "state": {
+          "normal": "Normal",
+          "error": "Error",
+          "no_disk": "No disk",
+          "read_only": "Read-only",
+          "unknown": "Unknown"
+        }
       },
       "network_speed": {
         "name": "Network speed"
@@ -503,12 +522,29 @@
     },
     "image_enhancement_failed": {
       "message": "Failed to set image enhancement on the DVR."
+    },
+    "set_analog_period_active_failed": {
+      "message": "Failed to update state for Period {period} on channel {channel}."
+    },
+    "analog_period_same_start_end": {
+      "message": "Period start time and end time cannot be the same."
+    },
+    "set_analog_period_time_failed": {
+      "message": "Failed to update schedule for Period {period} on channel {channel}."
     }
   },
   "issues": {
     "auth_retrying": {
       "title": "DVR authentication retrying ({host})",
       "description": "Home Assistant received repeated authentication errors (HTTP 401/403) from the Intelbras DVR at {host}. The integration is cooling down between attempts to avoid DVR account lockout and will recover automatically once authentication succeeds.\n\nIf you changed the DVR password or user permissions, open the integration menu and select **Reconfigure** to update credentials immediately."
+    },
+    "insufficient_permissions": {
+      "title": "DVR user '{username}' is missing required permissions ({host})",
+      "description": "The DVR user account **{username}** on `{host}` does not have all required permissions for full integration functionality.\n\n**Missing permissions:** `{missing_permissions}`\n\nPlease log in to the DVR web interface (**System > Account > Account**), enable all system and channel permissions for **{username}**, or select **Reconfigure** in Home Assistant to use an administrator account."
+    },
+    "user_not_sharable": {
+      "title": "DVR user '{username}' is not marked as reusable ({host})",
+      "description": "The DVR user account **{username}** on `{host}` has the **Reusable** (`Sharable`) option disabled. This can cause session conflicts or disconnections when multiple streams or clients connect simultaneously.\n\nPlease log in to the DVR web interface (**System > Account > Account**), edit user **{username}**, and enable the **Reusable** option."
     }
   },
   "services": {

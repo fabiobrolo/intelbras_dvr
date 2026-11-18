@@ -85,6 +85,9 @@ async def async_get_config_entry_diagnostics(
                 async_redact_data(u, TO_REDACT)
                 for u in coord_data.get("active_users", [])
             ],
+            "user_permissions": async_redact_data(
+                coord_data.get("user_permissions", {}), TO_REDACT
+            ),
         },
         "event_coordinator": {
             "stream_connected": event_coordinator.stream_connected if event_coordinator else False,

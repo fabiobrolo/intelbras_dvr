@@ -59,6 +59,7 @@ class DVRRuntimeState(TypedDict, total=False):
     ptz_status: dict[int, dict[str, Any]]
     firmware_update: dict[str, Any]
     active_users: list[dict[str, Any]]
+    user_permissions: dict[str, Any]
     storage_diagnostics: dict[str, Any]
     network_interfaces: list[dict[str, Any]]
     system_time: str | None
@@ -122,6 +123,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         self._cached_software_version: str | None = None
         self._cached_remote_devices: dict[int, dict[str, Any]] | None = None
         self._cached_monitor_caps: list[int] | None = None
+        self._cached_user_permissions: dict[str, Any] | None = None
         self._titles_synced: bool = False
         self._cached_ptz_presets: dict[int, dict[int, str]] = {}
         self._presets_loaded: bool = False
@@ -362,6 +364,61 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
                 except Exception as exc:  # noqa: BLE001
                     _LOGGER.debug("DVR getCaps discovery error: %s", exc)
 
+            if self._cached_user_permissions is None:
+                try:
+                    perms = await self.client.async_validate_user_permissions(channels)
+                    if isinstance(perms, dict):
+                        self._cached_user_permissions = perms
+                        if perms.get("checked", False):
+                            host_str = str(
+                                self.config_entry.data.get(CONF_HOST, self.client.host)
+                            )
+                            if not perms.get("has_all_permissions", True):
+                                missing_list = perms.get("missing_permissions", [])
+                                ir.async_create_issue(
+                                    self.hass,
+                                    DOMAIN,
+                                    f"insufficient_permissions_{self.config_entry.entry_id}",
+                                    is_fixable=False,
+                                    severity=ir.IssueSeverity.WARNING,
+                                    translation_key="insufficient_permissions",
+                                    translation_placeholders={
+                                        "username": self.client.username,
+                                        "host": host_str,
+                                        "missing_permissions": ", ".join(missing_list[:10]),
+                                    },
+                                )
+                            else:
+                                ir.async_delete_issue(
+                                    self.hass,
+                                    DOMAIN,
+                                    f"insufficient_permissions_{self.config_entry.entry_id}",
+                                )
+
+                            if not perms.get("sharable", True):
+                                ir.async_create_issue(
+                                    self.hass,
+                                    DOMAIN,
+                                    f"user_not_sharable_{self.config_entry.entry_id}",
+                                    is_fixable=False,
+                                    severity=ir.IssueSeverity.WARNING,
+                                    translation_key="user_not_sharable",
+                                    translation_placeholders={
+                                        "username": self.client.username,
+                                        "host": host_str,
+                                    },
+                                )
+                            else:
+                                ir.async_delete_issue(
+                                    self.hass,
+                                    DOMAIN,
+                                    f"user_not_sharable_{self.config_entry.entry_id}",
+                                )
+                except DVRAuthError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("DVR user permission check error: %s", exc)
+
             now = time.monotonic()
             should_check_firmware = (
                 now - self._last_firmware_check
@@ -500,6 +557,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             "ptz_status": ptz_status,
             "firmware_update": self._cached_firmware_info,
             "active_users": active_users,
+            "user_permissions": self._cached_user_permissions or {},
             "storage_diagnostics": storage_diagnostics,
             "network_interfaces": network_interfaces,
             "system_time": system_time,
@@ -692,27 +750,11 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         return "wdr_mode" in vio or "normal_wdr_mode" in vio or "night_wdr_mode" in vio
 
     def is_wdr_enabled(self, channel: int) -> bool:
-        """Return True if WDR is enabled in the currently active profile."""
+        """Return True if WDR is enabled in the currently effective profile."""
         if not self.data:
             return False
-        vio = self.data.get("video_in_options", {}).get(channel, {})
-        switch_mode = vio.get("switch_mode", 0)
-        if switch_mode == 2 and "sunset_hour" in vio and "sunrise_hour" in vio:
-            sunset = dt_time(vio["sunset_hour"], vio.get("sunset_minute", 0))
-            sunrise = dt_time(vio["sunrise_hour"], vio.get("sunrise_minute", 0))
-            now_time = dt_util.now().time()
-            is_night = (
-                (now_time >= sunset or now_time < sunrise)
-                if sunset > sunrise
-                else (sunset <= now_time < sunrise)
-            )
-            if is_night and "night_wdr_mode" in vio:
-                return vio["night_wdr_mode"] > 0
-            if not is_night and "normal_wdr_mode" in vio:
-                return vio["normal_wdr_mode"] > 0
-        if "normal_wdr_mode" in vio:
-            return vio["normal_wdr_mode"] > 0
-        return vio.get("wdr_mode", 0) > 0
+        prof = self.get_effective_profile_index(channel)
+        return self.client.get_light_compensation_mode(channel, profile=prof) == "wdr"
 
     def supports_profile_mode(self, channel: int) -> bool:
         """Check if Profile Mode is supported for this channel (Intelbras IP cameras only)."""
@@ -860,7 +902,12 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         ok = await self.client.set_analog_period_active(channel, period_idx, active)
         if not ok:
             raise HomeAssistantError(
-                f"Falha ao configurar estado do período {period_idx + 1} no canal {channel + 1}."
+                translation_domain=DOMAIN,
+                translation_key="set_analog_period_active_failed",
+                translation_placeholders={
+                    "period": str(period_idx + 1),
+                    "channel": str(channel + 1),
+                },
             )
         await self.async_request_refresh()
 
@@ -874,7 +921,8 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         """Update start or end time for an analog period with validation."""
         if start_time is not None and end_time is not None and start_time == end_time:
             raise HomeAssistantError(
-                "O horário de início e término do período não podem ser iguais."
+                translation_domain=DOMAIN,
+                translation_key="analog_period_same_start_end",
             )
 
         ok = await self.client.set_analog_period_time(
@@ -882,7 +930,12 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         )
         if not ok:
             raise HomeAssistantError(
-                f"Falha ao atualizar horário do período {period_idx + 1} no canal {channel + 1}."
+                translation_domain=DOMAIN,
+                translation_key="set_analog_period_time_failed",
+                translation_placeholders={
+                    "period": str(period_idx + 1),
+                    "channel": str(channel + 1),
+                },
             )
         await self.async_request_refresh()
 
