@@ -172,6 +172,21 @@ automation:
 
 ---
 
+## ⏱️ Estratégia de Polling e Intervalos de Atualização
+
+Para proteger o servidor HTTP/CGI embarcado do DVR contra sobrecarga (especialmente durante a reconexão de câmeras IP após reinicializações), a integração utiliza uma **arquitetura de atualização em camadas**, com requisições serializadas e um **intervalo mínimo de 150 ms (`pacing`)** entre chamadas CGI sequenciais:
+
+| Camada de Atualização | Intervalo | Dados e Endpoints Consultados | Atualização Imediata sob Demanda |
+|---|---|---|---|
+| **Push em Tempo Real** | Contínuo (`heartbeat=5s`) | Stream HTTP persistente (`eventManager.cgi?action=attach`): Movimento, Smart Motion (Humano/Veículo), IVS (Linha/Cerca Virtual), Perda de Vídeo, Mascaramento, Alertas de HD e Falha de Login | Instantâneo (sem polling) |
+| **Polling Rápido (Local no DVR)** | A cada **60 s** | Apenas tabelas leves locais do DVR (`VideoColor`, `RecordMode`, `Encode` — sem RPC síncrono para câmeras IP remotas), Modo do Monitor (`split.cgi`), Usuários Conectados (`userManager.cgi`) e Hora do DVR (`global.cgi`) | Ao alterar saída de monitor, modo de gravação ou ajustes básicos de imagem |
+| **Polling Lento (Estendido e Diagnóstico)** | A cada **5 min (300 s)** | Configurações estendidas de câmera (`VideoWidget`, `VideoInOptions`, `VideoInDenoise`, `ImageEnhancement` — com fallback automático para tabelas locais caso algum RPC de câmera IP dê timeout), Diagnóstico e Uso de HD (`storageDevice.cgi`, sem chamadas duplicadas), Interface e Velocidade de Rede (`netApp.cgi`) e Status PTZ (`ptz.cgi`) | Ao pressionar **Atualizar dados** / **Atualizar câmera** / **Atualizar diagnóstico do HD**, ou ao editar qualquer entidade de perfil, OSD, compensação de luz ou redução de ruído no HA |
+| **Verificação de Firmware** | A cada **6 horas** | Verificação de nova versão de firmware (`CloudUpgrader/check` / `upgrade.cgi`) | Na inicialização da integração |
+| **Cache Único (Inicialização)** | Startup / Reconfiguração | Dados de hardware (`magicBox.cgi`), Títulos dos canais e Dispositivos IP remotos, Capacidades de hardware (`encode.cgi?action=getCaps`, `devVideoInput.cgi?action=getCaps`), Predefinições PTZ e Auditoria de permissões do usuário (`userManager.cgi?action=getUserInfo`) | Ao recarregar ou reconfigurar a integração |
+| **Instantâneos (Snapshots)** | Configurável (`0,5s`–`30s`, padrão `1,0s`) | `snapshot.cgi` (requisitado apenas enquanto estiver sendo visualizado ativamente em um dashboard) | Dinâmico via `number.*_taxa_de_atualizacao_dos_instantaneos` |
+
+---
+
 ## 🔐 Pré-requisitos: Usuário Dedicado no DVR e Permissões (Recomendado)
 
 Antes de adicionar a integração, é **fortemente recomendado** criar uma conta de usuário dedicada especificamente para o Home Assistant no seu DVR Intelbras (**Sistema > Conta > Usuário**):

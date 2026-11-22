@@ -6,7 +6,7 @@ from enum import StrEnum
 from homeassistant.const import Platform
 
 DOMAIN = "intelbras_dvr"
-INTEGRATION_VERSION = "0.8.1"
+INTEGRATION_VERSION = "0.8.2"
 
 # ---------------------------------------------------------------------------
 # Configuration keys
@@ -30,8 +30,10 @@ CONF_MONITOR_EVENTS = "monitor_events"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_RTSP_PORT = 554
 DEFAULT_SNAPSHOT_INTERVAL = 1.0  # seconds between camera snapshot refreshes
-DEFAULT_SCAN_INTERVAL = 60       # seconds — regular polling (slow poll)
+DEFAULT_SCAN_INTERVAL = 60       # seconds — fast poll (local DVR state)
+SLOW_DIAGNOSTICS_INTERVAL = 300  # seconds — slow poll (extended IP-camera config, storage, network, PTZ status)
 FIRMWARE_CHECK_INTERVAL = 21600  # seconds — 6 hours
+CGI_REQUEST_PACING = 0.15        # seconds — minimum gap between sequential CGI requests to avoid DVR HTTP saturation
 DEFAULT_GO2RTC_RTSP_PORT = 8554
 
 # Picture setting defaults & ranges

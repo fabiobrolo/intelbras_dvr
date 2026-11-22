@@ -31,6 +31,7 @@ from .const import (
     FIRMWARE_CHECK_INTERVAL,
     LOGIN_LOCKOUT_BACKOFF,
     RECORD_MODE_SCHEDULE,
+    SLOW_DIAGNOSTICS_INTERVAL,
 )
 from .dvr import DVRAuthError, DVRConnectionError, IntelbrasClient
 
@@ -128,6 +129,11 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         self._cached_ptz_presets: dict[int, dict[int, str]] = {}
         self._presets_loaded: bool = False
         self._video_caps_loaded: bool = False
+        self._last_slow_poll: float = 0.0
+        self._cached_storage_info: dict[str, Any] = {}
+        self._cached_storage_diagnostics: dict[str, Any] = {}
+        self._cached_network_interfaces: list[dict[str, Any]] = []
+        self._cached_ptz_status: dict[int, dict[str, Any]] = {}
         self._last_firmware_check: float = 0.0
         self._cached_firmware_info: dict[str, Any] = {
             "available": False,
@@ -420,24 +426,22 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
                     _LOGGER.debug("DVR user permission check error: %s", exc)
 
             now = time.monotonic()
+            should_run_slow_poll = (
+                self._last_slow_poll == 0.0
+                or (now - self._last_slow_poll) >= SLOW_DIAGNOSTICS_INTERVAL
+            )
             should_check_firmware = (
                 now - self._last_firmware_check
             ) >= FIRMWARE_CHECK_INTERVAL
 
             t0 = time.monotonic()
-            batch_config = await self.client.get_batch_config(channels)
+            batch_config = await self.client.get_batch_config(
+                channels, include_extended=should_run_slow_poll
+            )
 
             monitor_mode: dict[str, Any] = {}
             try:
                 monitor_mode = await self.client.get_monitor_mode(channel=1)
-            except DVRAuthError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.debug("DVR endpoint error (using default): %s", exc)
-
-            storage_info: dict[str, Any] = {}
-            try:
-                storage_info = await self.client.get_storage_info()
             except DVRAuthError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -452,32 +456,57 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
                 except Exception as exc:  # noqa: BLE001
                     _LOGGER.debug("DVR get_active_users error: %s", exc)
 
-            storage_diagnostics: dict[str, Any] = {}
-            if self.config_entry.data.get(CONF_MONITOR_STORAGE, True):
-                try:
-                    storage_diagnostics = await self.client.get_storage_diagnostics()
-                except DVRAuthError:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    _LOGGER.debug("DVR get_storage_diagnostics error: %s", exc)
-
-            network_interfaces: list[dict[str, Any]] = []
-            if self.config_entry.data.get(CONF_MONITOR_NETWORK, True):
-                try:
-                    network_interfaces = await self.client.get_network_interfaces()
-                except DVRAuthError:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    _LOGGER.debug("DVR get_network_interfaces error: %s", exc)
-
             system_time: str | None = None
             try:
                 system_time = await self.client.get_system_time()
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.debug("DVR get_system_time error: %s", exc)
 
+            storage_info: dict[str, Any] = self._cached_storage_info
+            storage_diagnostics: dict[str, Any] = self._cached_storage_diagnostics
+            network_interfaces: list[dict[str, Any]] = self._cached_network_interfaces
+
+            if should_run_slow_poll:
+                if self.config_entry.data.get(CONF_MONITOR_STORAGE, True):
+                    try:
+                        diag = await self.client.get_storage_diagnostics()
+                        raw_info = diag.pop("raw_info", None)
+                        storage_diagnostics = diag
+                        self._cached_storage_diagnostics = diag
+                        if isinstance(raw_info, dict) and raw_info:
+                            storage_info = raw_info
+                            self._cached_storage_info = raw_info
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_storage_diagnostics error: %s", exc)
+                else:
+                    try:
+                        s_info = await self.client.get_storage_info()
+                        if s_info:
+                            storage_info = s_info
+                            self._cached_storage_info = s_info
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_storage_info error: %s", exc)
+
+                if self.config_entry.data.get(CONF_MONITOR_NETWORK, True):
+                    try:
+                        network_interfaces = await self.client.get_network_interfaces()
+                        self._cached_network_interfaces = network_interfaces
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_network_interfaces error: %s", exc)
+
             self._last_response_time_ms = round((time.monotonic() - t0) * 1000, 1)
-            _LOGGER.debug("DVR monitor mode: %r", monitor_mode)
+            _LOGGER.debug(
+                "DVR poll completed in %.1f ms (slow_poll=%s, monitor_mode=%r)",
+                self._last_response_time_ms,
+                should_run_slow_poll,
+                monitor_mode,
+            )
 
             if should_check_firmware:
                 try:
@@ -528,14 +557,20 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             or 16
         )
 
-        ptz_status: dict[int, dict[str, Any]] = {}
-        for ptz_ch in self.ptz_channels:
-            try:
-                st = await self.client.get_ptz_status(ptz_ch)
-                if st:
-                    ptz_status[ptz_ch] = st
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.debug("Could not fetch PTZ status for channel %d: %s", ptz_ch, exc)
+        ptz_status: dict[int, dict[str, Any]] = self._cached_ptz_status
+        if should_run_slow_poll:
+            fresh_ptz: dict[int, dict[str, Any]] = {}
+            for ptz_ch in self.ptz_channels:
+                try:
+                    st = await self.client.get_ptz_status(ptz_ch)
+                    if st:
+                        fresh_ptz[ptz_ch] = st
+                except Exception as exc:  # noqa: BLE001
+                    _LOGGER.debug("Could not fetch PTZ status for channel %d: %s", ptz_ch, exc)
+            if fresh_ptz:
+                self._cached_ptz_status = fresh_ptz
+                ptz_status = fresh_ptz
+            self._last_slow_poll = now
 
         return {
             "system_info": self._cached_system_info or {},
@@ -566,12 +601,23 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             "consecutive_failures": self._consecutive_failures,
         }
 
+    async def async_force_full_refresh(self) -> None:
+        """Force an immediate full refresh including slow-poll extended and diagnostic tables."""
+        self._last_slow_poll = 0.0
+        await self.async_request_refresh()
+
     async def async_refresh_storage(self) -> None:
         """Force a fresh query of storage diagnostics and notify listeners."""
         try:
             diag = await self.client.get_storage_diagnostics()
+            raw_info = diag.pop("raw_info", None)
+            self._cached_storage_diagnostics = diag
+            if isinstance(raw_info, dict) and raw_info:
+                self._cached_storage_info = raw_info
             if self.data is not None:
                 self.data["storage_diagnostics"] = diag
+                if isinstance(raw_info, dict) and raw_info:
+                    self.data["storage_info"] = raw_info
                 self.async_set_updated_data(dict(self.data))
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("Manual storage refresh failed: %s", exc)

@@ -172,6 +172,21 @@ automation:
 
 ---
 
+## ⏱️ Polling Strategy & Update Intervals
+
+To protect the DVR's embedded HTTP/CGI web server from overload (especially during post-reboot IP camera reconnection), the integration uses a **tiered update architecture** with serialized requests and a **150 ms minimum pacing interval** between sequential CGI calls:
+
+| Update Tier | Interval | Data & Endpoints Queried | Immediate On-Demand Refresh |
+|---|---|---|---|
+| **Real-Time Push** | Continuous (`heartbeat=5s`) | Persistent HTTP stream (`eventManager.cgi?action=attach`): Motion, Smart Motion (Human/Vehicle), IVS (Tripwire/Intrusion), Video Loss, Video Blind, Storage Alerts, Login Failure | Instant (zero polling) |
+| **Fast Poll (Local DVR)** | Every **60 s** | Lightweight local DVR tables only (`VideoColor`, `RecordMode`, `Encode` — no synchronous RPC to remote IP cameras), Physical Monitor Mode (`split.cgi`), Active Sessions (`userManager.cgi`), DVR Clock (`global.cgi`) | When changing monitor view, recording mode, or picture settings |
+| **Slow Poll (Extended & Diagnostics)** | Every **5 min (300 s)** | Extended camera config (`VideoWidget`, `VideoInOptions`, `VideoInDenoise`, `ImageEnhancement` — with automatic fallback to local tables if an IP camera RPC times out), Storage & HDD Diagnostics (`storageDevice.cgi`, deduplicated), Network Interface & Speed (`netApp.cgi`), PTZ Status (`ptz.cgi`) | Pressing **Refresh Data** / **Refresh Camera** / **Refresh Storage Diagnostics**, or editing any profile, OSD, light compensation, or noise reduction entity in HA |
+| **Firmware Check** | Every **6 hours** | Online firmware version check (`CloudUpgrader/check` / `upgrade.cgi`) | On integration startup |
+| **One-Time Cache** | Startup / Reconfigure | Hardware info (`magicBox.cgi`), Channel titles & Remote IP devices, Hardware capabilities (`encode.cgi?action=getCaps`, `devVideoInput.cgi?action=getCaps`), PTZ presets, User permission audit (`userManager.cgi?action=getUserInfo`) | On integration reload / reconfigure |
+| **Snapshots** | Configurable (`0.5s`–`30s`, default `1.0s`) | `snapshot.cgi` (fetched only while actively viewed on a dashboard) | Dynamic via `number.*_snapshot_interval` |
+
+---
+
 ## 🔐 Prerequisites: Dedicated DVR User & Permissions (Recommended)
 
 Before adding the integration, it is **strongly recommended** to create a dedicated user account specifically for Home Assistant on your Intelbras DVR (**System > Account > User**):

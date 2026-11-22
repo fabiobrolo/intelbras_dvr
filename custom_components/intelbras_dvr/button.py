@@ -138,8 +138,8 @@ class DVRRefreshButton(DVREntity, ButtonEntity):
         self._attr_unique_id = f"{entry.entry_id}_refresh_all"
 
     async def async_press(self) -> None:
-        """Request an immediate coordinator refresh."""
-        await self.coordinator.async_request_refresh()
+        """Request an immediate full coordinator refresh (including extended and diagnostic tables)."""
+        await self.coordinator.async_force_full_refresh()
 
 
 class DVRRefreshStorageButton(DVREntity, ButtonEntity):
@@ -176,8 +176,8 @@ class CameraRefreshButton(CameraChannelEntity, ButtonEntity):
         self._attr_unique_id = f"{entry.entry_id}_ch{channel}_refresh"
 
     async def async_press(self) -> None:
-        """Pull the latest state from the DVR into Home Assistant."""
-        await self.coordinator.async_request_refresh()
+        """Pull the latest state (including extended camera options) from the DVR into Home Assistant."""
+        await self.coordinator.async_force_full_refresh()
 
 
 class CameraResetDefaultsButton(CameraChannelEntity, ButtonEntity):

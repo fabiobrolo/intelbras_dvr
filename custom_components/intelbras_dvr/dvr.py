@@ -13,6 +13,7 @@ from typing import Any, Callable
 import httpx
 
 from .const import (
+    CGI_REQUEST_PACING,
     CLOUD_UPGRADER_CHECK_API,
     CLOUD_UPGRADER_EXEC_API,
     CONFIG_MANAGER_CGI,
@@ -101,6 +102,7 @@ class IntelbrasClient:
         self._auth_failure_streak: int = 0
         self._client: httpx.AsyncClient | None = None
         self._request_lock: asyncio.Lock = asyncio.Lock()
+        self._last_request_ts: float = 0.0
         self._saved_video_colors: dict[int, dict[str, int]] = {}
         self._saved_video_colors_by_profile: dict[int, dict[int, dict[str, int]]] = {}
         self._channel_supports_acutance: set[int] = set()
@@ -112,6 +114,7 @@ class IntelbrasClient:
         self._channel_signal_formats: dict[int, str] = {}
         self._total_channels: int = 0
         self._channel_names: dict[int, str] = {}
+        self._video_widget: dict[int, dict[str, Any]] = {}
         self._video_in_options: dict[int, dict[str, Any]] = {}
         self._video_color: dict[int, dict[str, Any]] = {}
         self._video_color_by_profile: dict[int, dict[int, dict[str, Any]]] = {}
@@ -318,6 +321,10 @@ class IntelbrasClient:
             max_attempts = 2 if can_self_heal else 1
 
             for attempt in range(max_attempts):
+                if CGI_REQUEST_PACING > 0 and self._last_request_ts > 0:
+                    elapsed = time.monotonic() - self._last_request_ts
+                    if elapsed < CGI_REQUEST_PACING:
+                        await asyncio.sleep(CGI_REQUEST_PACING - elapsed)
                 client = await self._get_http_client()
                 try:
                     if method == "POST":
@@ -332,6 +339,8 @@ class IntelbrasClient:
                     raise DVRConnectionError(
                         f"HTTP error communicating with DVR at {url}: {exc}"
                     ) from exc
+                finally:
+                    self._last_request_ts = time.monotonic()
 
                 if resp.status_code != 401:
                     client.cookies.clear()
@@ -1099,6 +1108,7 @@ class IntelbrasClient:
                         pass
 
         partitions: list[dict[str, Any]] = []
+        raw_info: dict[str, str] = {}
         overall_state = "Unknown"
         fs_error = False
         total_bytes = 0.0
@@ -1113,6 +1123,7 @@ class IntelbrasClient:
                 k, v = line.split("=", 1)
                 k = k.strip()
                 v = v.strip()
+                raw_info[k] = v
                 if k == "list.info[0].State":
                     overall_state = v
                 elif k.startswith("list.info[0].Detail["):
@@ -1152,6 +1163,7 @@ class IntelbrasClient:
             "total_bytes": total_bytes,
             "used_bytes": used_bytes,
             "usage_percent": usage_pct,
+            "raw_info": raw_info,
         }
 
     async def get_active_users(self) -> list[dict[str, Any]]:
@@ -1619,6 +1631,8 @@ class IntelbrasClient:
     async def get_batch_config(
         self,
         channels: list[int],
+        *,
+        include_extended: bool = True,
     ) -> tuple[
         dict[int, dict[str, int]],
         dict[int, int],
@@ -1626,24 +1640,55 @@ class IntelbrasClient:
         dict[int, dict[str, Any]],
         dict[int, dict[str, Any]],
     ]:
-        """Fetch VideoColor, RecordMode, Encode, VideoWidget, and VideoInOptions in a single HTTP request."""
-        resp = await self._get(
-            CONFIG_MANAGER_CGI,
-            params={
-                "action": "getConfig",
-                "name": [
-                    "VideoColor",
-                    "RecordMode",
-                    "Encode",
-                    "VideoWidget",
-                    "VideoInOptions",
-                    "VideoInDenoise",
-                    "ImageEnhancement",
-                ],
-            },
-        )
+        """Fetch DVR configuration tables in a single HTTP request.
+
+        When ``include_extended`` is False, only lightweight local DVR tables
+        (VideoColor, RecordMode, Encode) are queried to avoid synchronous RPC
+        calls to remote IP cameras on every 60-second poll cycle.
+        When ``include_extended`` is True, VideoWidget, VideoInOptions,
+        VideoInDenoise, and ImageEnhancement are also queried, with automatic
+        fallback to the lightweight local tables if an IP camera RPC times out.
+        """
+        base_tables = ["VideoColor", "RecordMode", "Encode"]
+        extended_tables = [
+            "VideoColor",
+            "RecordMode",
+            "Encode",
+            "VideoWidget",
+            "VideoInOptions",
+            "VideoInDenoise",
+            "ImageEnhancement",
+        ]
+        used_extended = include_extended
+        if include_extended:
+            try:
+                resp = await self._get(
+                    CONFIG_MANAGER_CGI,
+                    params={"action": "getConfig", "name": extended_tables},
+                )
+            except DVRConnectionError as exc:
+                _LOGGER.warning(
+                    "Extended DVR config query timed out/failed (%s); falling back to lightweight local tables.",
+                    exc,
+                )
+                used_extended = False
+                resp = await self._get(
+                    CONFIG_MANAGER_CGI,
+                    params={"action": "getConfig", "name": base_tables},
+                )
+        else:
+            resp = await self._get(
+                CONFIG_MANAGER_CGI,
+                params={"action": "getConfig", "name": base_tables},
+            )
         if resp.status_code != 200:
-            return {}, {ch: RECORD_MODE_SCHEDULE for ch in channels}, {}, {}, {}
+            return (
+                self._video_color,
+                {ch: RECORD_MODE_SCHEDULE for ch in channels},
+                self._encode_config,
+                self._video_widget,
+                self._video_in_options,
+            )
 
         colors: dict[int, dict[str, int]] = {}
         modes: dict[int, int] = {}
@@ -1990,7 +2035,12 @@ class IntelbrasClient:
         for ch in channels:
             modes.setdefault(ch, RECORD_MODE_SCHEDULE)
 
-        self._video_in_options = video_in_options
+        if used_extended:
+            self._video_widget = video_widget
+            self._video_in_options = video_in_options
+        else:
+            video_widget = self._video_widget
+            video_in_options = self._video_in_options
 
         for ch in channels:
             active_p = self.get_active_profile_index(ch)
