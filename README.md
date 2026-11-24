@@ -11,6 +11,8 @@
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
 
 > ⚠️ **Disclaimer**: Intelbras® and Dahua® are registered trademarks of their respective owners. This is an unofficial community integration without any affiliation, endorsement, or support from Intelbras S.A. or Dahua Technology.
+>
+> 📌 **Scope (DVRs & NVRs only):** This integration is designed as a **hub integration** for **Intelbras/Dahua DVRs and NVRs** (parent recorder device + child camera channel devices). It is **not** intended for standalone single IP cameras — if your IP cameras are already connected to your DVR/NVR, manage them through the DVR/NVR entry; for standalone IP cameras without a recorder, use a dedicated IP camera integration (such as ONVIF or Generic Camera).
 
 ---
 
@@ -140,6 +142,8 @@ Verified models and operational capabilities:
 | `number` | `acutance` | Config | Video Adjustment / sharpness slider (`0`–`15`) per profile |
 | `number` | `noise_reduction` | Config | 2D Noise Reduction level slider (`0`–`100`%) per profile |
 | `number` | `image_gain` | Config | Image Gain level slider (`0`–`100`%) per profile |
+| `number` | `motion_sensitivity`, `motion_threshold` | Config | Motion detection sensitivity and threshold sliders (`0`–`100`) per channel |
+| `switch` | `motion_detection_enable` | Config | Enable or disable DVR motion detection per channel (exposes sensitivity, threshold, warm light, beep, and record flags) |
 | `switch` | `auto_noise_reduction` | Config | Toggle Automatic Noise Reduction (`GainAuto`) per profile |
 | `switch` | `privacy_mask` | None | Black out or restore camera video feed |
 | `switch` | `channel_title_overlay` | Config | Toggle channel name OSD overlay on video |
@@ -179,10 +183,10 @@ To protect the DVR's embedded HTTP/CGI web server from overload (especially duri
 | Update Tier | Interval | Data & Endpoints Queried | Immediate On-Demand Refresh |
 |---|---|---|---|
 | **Real-Time Push** | Continuous (`heartbeat=5s`) | Persistent HTTP stream (`eventManager.cgi?action=attach`): Motion, Smart Motion (Human/Vehicle), IVS (Tripwire/Intrusion), Video Loss, Video Blind, Storage Alerts, Login Failure | Instant (zero polling) |
-| **Fast Poll (Local DVR)** | Every **60 s** | Lightweight local DVR tables only (`VideoColor`, `RecordMode`, `Encode` — no synchronous RPC to remote IP cameras), Physical Monitor Mode (`split.cgi`), Active Sessions (`userManager.cgi`), DVR Clock (`global.cgi`) | When changing monitor view, recording mode, or picture settings |
-| **Slow Poll (Extended & Diagnostics)** | Every **5 min (300 s)** | Extended camera config (`VideoWidget`, `VideoInOptions`, `VideoInDenoise`, `ImageEnhancement` — with automatic fallback to local tables if an IP camera RPC times out), Storage & HDD Diagnostics (`storageDevice.cgi`, deduplicated), Network Interface & Speed (`netApp.cgi`), PTZ Status (`ptz.cgi`) | Pressing **Refresh Data** / **Refresh Camera** / **Refresh Storage Diagnostics**, or editing any profile, OSD, light compensation, or noise reduction entity in HA |
+| **Fast Poll (Local DVR)** | Every **60 s** | Lightweight local DVR tables only (`VideoColor`, `RecordMode` — ~13 KB, no `Encode` bloat and no synchronous RPC to remote IP cameras), Physical Monitor Mode (`split.cgi`), Active Sessions (`userManager.cgi`), DVR Clock (`global.cgi`) | When changing monitor view, recording mode, or picture settings |
+| **Slow Poll (Extended & Diagnostics)** | Every **5 min (300 s)** | Extended camera config (`Encode`, `VideoWidget`, `VideoInOptions`, `VideoInDenoise`, `ImageEnhancement` — with automatic fallback to local tables if an IP camera RPC times out), Per-Channel Motion Detection (`MotionDetect`), Storage & HDD Diagnostics (`storageDevice.cgi`, deduplicated, with `healthy`, `total_human`, and `preallocated_disk` attributes), Network Interface & Speed (`netApp.cgi`), PTZ Status (`ptz.cgi`) | Pressing **Refresh Data** / **Refresh Camera** / **Refresh Storage Diagnostics**, toggling motion detection, or editing any profile, OSD, light compensation, or noise reduction entity in HA |
 | **Firmware Check** | Every **6 hours** | Online firmware version check (`CloudUpgrader/check` / `upgrade.cgi`) | On integration startup |
-| **One-Time Cache** | Startup / Reconfigure | Hardware info (`magicBox.cgi`), Channel titles & Remote IP devices, Hardware capabilities (`encode.cgi?action=getCaps`, `devVideoInput.cgi?action=getCaps`), PTZ presets, User permission audit (`userManager.cgi?action=getUserInfo`) | On integration reload / reconfigure |
+| **One-Time Cache** | Startup / Reconfigure | Hardware info & version (`magicBox.cgi?action=getSystemInfo`, `getSoftwareVersion`, `getHardwareVersion`), Channel titles & Remote IP devices, Hardware capabilities (`encode.cgi?action=getCaps`, `devVideoInput.cgi?action=getCaps`), PTZ presets, User permission audit (`userManager.cgi?action=getUserInfo`) | On integration reload / reconfigure |
 | **Snapshots** | Configurable (`0.5s`–`30s`, default `1.0s`) | `snapshot.cgi` (fetched only while actively viewed on a dashboard) | Dynamic via `number.*_snapshot_interval` |
 
 ---
@@ -226,7 +230,7 @@ Before adding the integration, it is **strongly recommended** to create a dedica
 
 1. In Home Assistant, navigate to **Settings > Devices & Services > Add Integration**.
 2. Search for **Intelbras DVR**.
-3. **Step 1 - Connection:** Enter host/IP address, username, password, HTTP port (default `80`), and RTSP port (default `554`).
+3. **Step 1 - Connection:** The config flow automatically probes the LAN via **DHDiscover (UDP 37810)** to list unconfigured Intelbras/Dahua **DVRs and NVRs** without requiring credentials (standalone IP cameras and already-configured recorders are automatically filtered out). Pick a discovered DVR/NVR from the dropdown or type any custom host/IP address, then enter username, password, HTTP port (default `80`), and RTSP port (default `554`).
 4. **Step 2 - Camera Channels:** The integration automatically discovers all active channels, names, and PTZ capabilities. Select the cameras you want to import.
 5. **Step 3 - Feature Selection:** Enable the desired feature sets (`main_stream`, `sub_stream`, `snapshot`, `motion`, `video_color`, `profiles`, `overlay`, `ptz`, `recording`, etc.) and system monitoring options.
 
@@ -247,8 +251,12 @@ Before adding the integration, it is **strongly recommended** to create a dedica
 | `intelbras_dvr.ptz_move` | Move PTZ camera in a direction with timed stop | `channel` (`1`–`32`), `direction`, `speed` (`1`–`8`), `duration` (`0.1`–`10.0`s) |
 | `intelbras_dvr.ptz_stop` | Stop ongoing PTZ movement | `channel` (`1`–`32`), `direction` |
 | `intelbras_dvr.ptz_preset` | Move PTZ camera to a saved preset | `channel` (`1`–`32`), `preset` (`1`–`255`) |
-| `intelbras_dvr.get_logs` | Query structured audit and system event logs | `count` (`1`–`100`), `log_type` |
+| `intelbras_dvr.get_logs` | Query structured audit and system event logs (including parsed `detail_fields`) | `count` (`1`–`100`), `log_type`, `start_time`, `end_time` |
+| `intelbras_dvr.get_config` | Read any DVR `configManager` table by name (returns response data) | `name` (e.g. `MotionDetect`, `Encode`, `NTP`) |
+| `intelbras_dvr.set_config` | Write one or more DVR `configManager` parameters directly | `params` (key/value map; empty strings automatically clear fields) |
 | `intelbras_dvr.reboot` | Reboot the DVR hardware | `entry_id` (optional) |
+
+> 💾 **Note on Disk Usage (`100%`):** Intelbras/Dahua DVRs pre-allocate 100% of disk space on format for circular recording. Seeing `100.0%` on `sensor.*_disk_usage` is normal — check the `healthy` and `preallocated_disk` attributes on the Storage Status and Disk Usage sensors to verify drive health.
 
 ---
 

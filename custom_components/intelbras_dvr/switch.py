@@ -74,6 +74,13 @@ AUTO_NOISE_REDUCTION_DESCRIPTION = SwitchEntityDescription(
     entity_category=EntityCategory.CONFIG,
 )
 
+MOTION_DETECTION_ENABLE_DESCRIPTION = SwitchEntityDescription(
+    key="motion_detection_enable",
+    translation_key="motion_detection_enable",
+    icon="mdi:motion-sensor",
+    entity_category=EntityCategory.CONFIG,
+)
+
 
 
 async def async_setup_entry(
@@ -98,6 +105,10 @@ async def async_setup_entry(
         if CameraFeature.MASK in feats:
             entities.append(
                 PrivacyMaskSwitch(coordinator, entry, ch, name, event_coordinator)
+            )
+        if CameraFeature.MOTION in feats:
+            entities.append(
+                CameraMotionDetectionSwitch(coordinator, entry, ch, name)
             )
         overlay_enabled = CameraFeature.OVERLAY in feats if has_any_overlay else True
         if overlay_enabled:
@@ -604,6 +615,77 @@ class CameraAutoNoiseReductionSwitch(CameraChannelEntity, SwitchEntity):
                 translation_domain=DOMAIN,
                 translation_key="auto_noise_reduction_failed",
             )
+
+
+class CameraMotionDetectionSwitch(CameraChannelEntity, SwitchEntity):
+    """Switch to enable or disable DVR motion detection (MotionDetect[ch].Enable)."""
+
+    entity_description: SwitchEntityDescription = MOTION_DETECTION_ENABLE_DESCRIPTION
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+    ) -> None:
+        """Initialise the per-channel motion detection switch."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_motion_detection_enable"
+        self._optimistic_state: bool | None = None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True when DVR motion detection is enabled on this channel."""
+        if self._optimistic_state is not None:
+            return self._optimistic_state
+        return self.coordinator.is_motion_detection_enabled(self._channel)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return motion detection sensitivity, threshold, and event handler flags."""
+        info = self.coordinator.get_motion_detect_info(self._channel)
+        attrs: dict[str, Any] = {}
+        for key in (
+            "sensitivity",
+            "threshold",
+            "warm_light_enable",
+            "beep_enable",
+            "record_enable",
+            "record_latch",
+        ):
+            if key in info:
+                attrs[key] = info[key]
+        return attrs
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic state on coordinator refresh."""
+        self._optimistic_state = None
+        super()._handle_coordinator_update()
+
+    async def _async_set_enabled(self, enabled: bool) -> None:
+        """Apply motion detection state with optimistic UI feedback."""
+        self._optimistic_state = enabled
+        self.async_write_ha_state()
+        ok = await self.coordinator.async_set_motion_detection_enabled(
+            self._channel, enabled
+        )
+        self._optimistic_state = None
+        self.async_write_ha_state()
+        if not ok:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="set_motion_detection_failed",
+                translation_placeholders={"channel": str(self._channel)},
+            )
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable motion detection on this channel."""
+        await self._async_set_enabled(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable motion detection on this channel."""
+        await self._async_set_enabled(False)
 
 
 

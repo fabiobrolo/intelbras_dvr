@@ -370,3 +370,42 @@ get_logs:
       required: false
       selector:
         text:
+
+get_config:
+  name: Get DVR Config
+  description: Query any DVR configManager table by name (e.g. MotionDetect, Encode, VideoColor, Network, NTP).
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        config_entry:
+          integration: intelbras_dvr
+    name:
+      name: Table Name
+      description: Name of the configManager table to read (e.g. MotionDetect, Encode, RecordMode, NTP).
+      required: true
+      example: "MotionDetect"
+      selector:
+        text:
+
+set_config:
+  name: Set DVR Config
+  description: Write one or more DVR configManager parameters directly. Empty string values are automatically converted to a single space so the DVR clears the field.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID of the DVR (optional if only one DVR is configured).
+      required: false
+      selector:
+        config_entry:
+          integration: intelbras_dvr
+    params:
+      name: Parameters
+      description: Key/value mapping of configManager parameters to write (without leading 'table.' prefix).
+      required: true
+      example:
+        MotionDetect[0].Enable: true
+      selector:
+        object:

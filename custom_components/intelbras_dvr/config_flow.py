@@ -47,7 +47,12 @@ from .const import (
     SYSTEM_FEATURES,
     CameraFeature,
 )
-from .dvr import DVRAuthError, DVRConnectionError, IntelbrasClient
+from .dvr import (
+    DVRAuthError,
+    DVRConnectionError,
+    IntelbrasClient,
+    async_discover_dvr_devices,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +77,7 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
         self._selected_channels: list[int] = []
         self._system_caps: dict[str, bool] = {}
         self._reauth_entry: ConfigEntry | None = None
+        self._discovered_devices: list[dict[str, Any]] | None = None
 
     # ------------------------------------------------------------------
     # Step 1 – credentials
@@ -138,11 +144,60 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
             finally:
                 await client.close()
 
+        if user_input is None and self._discovered_devices is None:
+            try:
+                raw_discovered = await async_discover_dvr_devices(timeout=2.5)
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug("LAN DHDiscover probe failed: %s", exc)
+                raw_discovered = []
+
+            existing_entries = self._async_current_entries()
+            configured_serials = {
+                e.unique_id for e in existing_entries if e.unique_id
+            }
+            configured_hosts = {
+                str(e.data.get(CONF_HOST, "")).strip()
+                for e in existing_entries
+                if e.data.get(CONF_HOST)
+            }
+            # Suggest only unconfigured DVR/NVR hubs (exclude standalone IP cameras).
+            self._discovered_devices = [
+                dev
+                for dev in raw_discovered
+                if dev.get("is_dvr")
+                and dev.get("serial") not in configured_serials
+                and dev.get("ip") not in configured_hosts
+            ]
+
+        discovered = self._discovered_devices or []
+        if not self._host and discovered:
+            self._host = str(discovered[0]["ip"])
+            if self._http_port == DEFAULT_HTTP_PORT and discovered[0].get("http_port"):
+                self._http_port = int(discovered[0]["http_port"])
+
+        if discovered:
+            host_options: list[SelectOptionDict] = []
+            for dev in discovered:
+                ip = str(dev["ip"])
+                dtype = str(dev.get("device_type") or "DVR")
+                mname = str(dev.get("machine_name") or "").strip()
+                label = f"{dtype} ({ip}) — {mname}" if mname else f"{dtype} ({ip})"
+                host_options.append(SelectOptionDict(value=ip, label=label))
+            host_field: Any = SelectSelector(
+                SelectSelectorConfig(
+                    options=host_options,
+                    custom_value=True,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
+            )
+        else:
+            host_field = str
+
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
-                    vol.Required(CONF_HOST, default=self._host): str,
+                    vol.Required(CONF_HOST, default=self._host): host_field,
                     vol.Required(CONF_USERNAME, default=self._username): str,
                     vol.Required(CONF_PASSWORD): str,
                     vol.Optional(CONF_HTTP_PORT, default=self._http_port): int,

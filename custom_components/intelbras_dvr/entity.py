@@ -5,7 +5,11 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import (
+    CONNECTION_NETWORK_MAC,
+    DeviceInfo,
+    format_mac,
+)
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_FEATURES, CONF_HTTP_PORT, DEFAULT_HTTP_PORT, DOMAIN, CameraFeature
@@ -22,13 +26,23 @@ def dvr_device_info(entry: ConfigEntry, coordinator: IntelbrasCoordinator) -> De
         if http_port == DEFAULT_HTTP_PORT
         else f"http://{host}:{http_port}"
     )
+    data = coordinator.data or {}
+    ifaces = data.get("network_interfaces") or []
+    mac = (
+        str(ifaces[0].get("mac_address", "")).strip()
+        if ifaces and isinstance(ifaces[0], dict)
+        else ""
+    )
+    connections = {(CONNECTION_NETWORK_MAC, format_mac(mac))} if mac else set()
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
+        connections=connections,
         name=entry.title,
         manufacturer="Intelbras",
         model=sys_info.get("updateSerial") or sys_info.get("deviceType") or "DVR",
         serial_number=sys_info.get("serialNumber"),
-        sw_version=(coordinator.data or {}).get("software_version"),
+        sw_version=data.get("software_version"),
+        hw_version=data.get("hardware_version"),
         configuration_url=config_url if host else None,
     )
 

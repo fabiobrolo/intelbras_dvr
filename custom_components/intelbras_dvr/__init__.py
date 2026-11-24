@@ -53,7 +53,7 @@ from .const import (
     CameraFeature,
 )
 from .coordinator import IntelbrasCoordinator, IntelbrasEventCoordinator
-from .dvr import DVRAuthError, DVRConnectionError, IntelbrasClient
+from .dvr import DVRAuthError, DVRConnectionError, DVRError, IntelbrasClient
 from .views import DATA_PLAYBACK_ACTIVE_UNTIL, register_or_update_views
 
 _LOGGER = logging.getLogger(__name__)
@@ -205,6 +205,22 @@ GET_LOGS_SCHEMA = vol.Schema(
         ),
         vol.Optional("start_time"): cv.string,
         vol.Optional("end_time"): cv.string,
+    },
+    extra=vol.REMOVE_EXTRA,
+)
+
+GET_CONFIG_SCHEMA = vol.Schema(
+    {
+        _ENTRY_ID_FIELD: cv.string,
+        vol.Required("name"): cv.string,
+    },
+    extra=vol.REMOVE_EXTRA,
+)
+
+SET_CONFIG_SCHEMA = vol.Schema(
+    {
+        _ENTRY_ID_FIELD: cv.string,
+        vol.Required("params"): dict,
     },
     extra=vol.REMOVE_EXTRA,
 )
@@ -447,6 +463,35 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
             "logs": logs,
         }
 
+    async def handle_get_config(call: ServiceCall) -> ServiceResponse:
+        """Query any DVR configManager table by name."""
+        data = _runtime(call)
+        name: str = str(call.data["name"]).strip()
+        try:
+            config = await data.client.get_config(name)
+        except DVRError as exc:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="get_config_failed",
+                translation_placeholders={"name": name},
+            ) from exc
+        return {
+            "name": name,
+            "count": len(config),
+            "config": config,
+        }
+
+    async def handle_set_config(call: ServiceCall) -> None:
+        """Write one or more DVR configManager parameters."""
+        data = _runtime(call)
+        params: dict[str, Any] = dict(call.data["params"])
+        ok = await data.client.set_config(params)
+        if not ok:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="set_config_failed",
+            )
+
     for name, handler, schema in [
         ("set_video_color", handle_set_video_color, SET_VIDEO_COLOR_SCHEMA),
         ("set_monitor_split", handle_set_monitor_split, SET_MONITOR_SPLIT_SCHEMA),
@@ -456,6 +501,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         ("ptz_move", handle_ptz_move, PTZ_MOVE_SCHEMA),
         ("ptz_stop", handle_ptz_stop, PTZ_STOP_SCHEMA),
         ("ptz_preset", handle_ptz_preset, PTZ_PRESET_SCHEMA),
+        ("set_config", handle_set_config, SET_CONFIG_SCHEMA),
     ]:
         hass.services.async_register(DOMAIN, name, handler, schema=schema)
 
@@ -464,6 +510,13 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         "get_logs",
         handle_get_logs,
         schema=GET_LOGS_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "get_config",
+        handle_get_config,
+        schema=GET_CONFIG_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
 
@@ -558,14 +611,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: IntelbrasDVRConfigEntry)
         if http_port == DEFAULT_HTTP_PORT
         else f"http://{host}:{http_port}"
     )
+    ifaces = (coordinator.data or {}).get("network_interfaces") or []
+    dvr_mac = (
+        str(ifaces[0].get("mac_address", "")).strip()
+        if ifaces and isinstance(ifaces[0], dict)
+        else ""
+    )
+    dvr_connections = (
+        {(dr.CONNECTION_NETWORK_MAC, dr.format_mac(dvr_mac))} if dvr_mac else set()
+    )
     dvr_device = dev_reg.async_get_or_create(
         config_entry_id=entry.entry_id,
         identifiers={(DOMAIN, entry.entry_id)},
+        connections=dvr_connections,
         name=entry.title,
         manufacturer="Intelbras",
         model=sys_info.get("updateSerial") or sys_info.get("deviceType") or "DVR",
         serial_number=sys_info.get("serialNumber"),
         sw_version=(coordinator.data or {}).get("software_version"),
+        hw_version=(coordinator.data or {}).get("hardware_version"),
         configuration_url=dvr_config_url,
     )
 

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+import socket
+import struct
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -52,6 +55,192 @@ _ITEM_RE = re.compile(r"^items\[(\d+)\]\.([A-Za-z]+)(?:\[\d+\])?=(.*)$")
 _FIND_TIME_FMT = "%Y-%m-%d %H:%M:%S"
 _PLAYBACK_TIME_FMT = "%Y_%m_%d_%H_%M_%S"
 _FIND_PAGE_SIZE = 100
+_DHDISCOVER_PORT = 37810
+_DHDISCOVER_MCAST = "239.255.255.251"
+_DVR_DEVICE_CLASSES = {"DVR", "NVR", "MHDX", "XVR", "HCVR", "NVD", "IVS"}
+
+
+def _format_bytes(num_bytes: float) -> str:
+    """Format a byte count using decimal SI units (GB/TB) for HDD capacity display."""
+    if num_bytes <= 0:
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if num_bytes < 1000.0 or unit == "PB":
+            return f"{num_bytes:.2f} {unit}" if unit != "B" else f"{int(num_bytes)} B"
+        num_bytes /= 1000.0
+    return f"{num_bytes:.2f} PB"
+
+
+def _get_local_ipv4() -> str:
+    """Return the primary local IPv4 address used to reach the LAN."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("192.0.2.1", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return "0.0.0.0"
+    finally:
+        sock.close()
+
+
+def _build_dhdiscover_packet() -> bytes:
+    """Build a Dahua/Intelbras DHDiscover UDP search packet (32-byte DHIP header + JSON)."""
+    payload = json.dumps(
+        {"method": "DHDiscover.search", "params": {"mac": "", "uni": 1}}
+    ).encode("utf-8")
+    header = struct.pack(
+        "<I4sIIIIII",
+        0x20,
+        b"DHIP",
+        0,
+        0,
+        len(payload),
+        0,
+        len(payload),
+        0,
+    )
+    return header + payload
+
+
+def _is_dvr_device(device_class: str, device_type: str) -> bool:
+    """Return True if discovered metadata looks like a DVR/NVR rather than a standalone IPC."""
+    cls = device_class.strip().upper()
+    dtype = device_type.strip().upper()
+    if cls in _DVR_DEVICE_CLASSES:
+        return True
+    if cls == "IPC":
+        return False
+    return any(tok in dtype for tok in ("MHDX", "DVR", "NVR", "XVR", "NVD", "HCVR"))
+
+
+async def async_discover_dvr_devices(
+    timeout: float = 2.5,
+    targets: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Discover Dahua/Intelbras DVRs and cameras on the LAN via DHDiscover (UDP 37810).
+
+    Sends multicast (239.255.255.251), broadcast, and optional unicast probes without
+    requiring credentials. If no DVR/NVR answers multicast within 0.4 s (common on switches
+    with IGMP snooping or MHDX firmwares that only answer unicast), performs a fast local
+    /24 unicast sweep.
+    """
+    loop = asyncio.get_running_loop()
+    found: dict[str, dict[str, Any]] = {}
+    local_ip = _get_local_ipv4()
+
+    class _DHDiscoverProtocol(asyncio.DatagramProtocol):
+        def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
+            ip = addr[0]
+            try:
+                start = data.find(b"{")
+                if start == -1:
+                    return
+                body = data[start:].rstrip(b"\x00").decode("utf-8", errors="replace")
+                msg = json.loads(body)
+            except (ValueError, UnicodeDecodeError):
+                return
+            params = msg.get("params")
+            if not isinstance(params, dict):
+                return
+            dev_info = params.get("deviceInfo")
+            if not isinstance(dev_info, dict):
+                return
+            device_type = str(dev_info.get("DeviceType") or "").strip()
+            if not device_type:
+                return
+            serial = str(dev_info.get("SerialNo") or msg.get("mac") or ip).strip()
+            device_class = str(dev_info.get("DeviceClass") or "").strip()
+            try:
+                http_port = int(dev_info.get("HttpPort") or DEFAULT_HTTP_PORT)
+            except (TypeError, ValueError):
+                http_port = DEFAULT_HTTP_PORT
+            found[serial] = {
+                "ip": ip,
+                "mac": str(msg.get("mac") or params.get("mac") or "").strip(),
+                "device_type": device_type,
+                "machine_name": str(dev_info.get("MachineName") or "").strip(),
+                "serial": serial,
+                "version": str(dev_info.get("Version") or "").strip(),
+                "http_port": http_port,
+                "vendor": str(dev_info.get("Vendor") or "").strip(),
+                "device_class": device_class,
+                "is_dvr": _is_dvr_device(device_class, device_type),
+            }
+
+        def error_received(self, exc: Exception) -> None:
+            # Ignore ICMP port-unreachable errors during subnet unicast sweeps.
+            return
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    if local_ip != "0.0.0.0":
+        try:
+            sock.setsockopt(
+                socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(local_ip)
+            )
+        except OSError:
+            pass
+    try:
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+    except OSError:
+        pass
+    try:
+        sock.bind((local_ip if local_ip != "0.0.0.0" else "0.0.0.0", 0))
+    except OSError:
+        sock.bind(("0.0.0.0", 0))
+    sock.setblocking(False)
+
+    transport: asyncio.DatagramTransport | None = None
+    try:
+        transport, _ = await loop.create_datagram_endpoint(
+            _DHDiscoverProtocol, sock=sock
+        )
+        pkt = _build_dhdiscover_packet()
+        dests = [_DHDISCOVER_MCAST, "255.255.255.255"]
+        octets = local_ip.split(".")
+        if len(octets) == 4 and local_ip != "0.0.0.0":
+            dests.append(f"{octets[0]}.{octets[1]}.{octets[2]}.255")
+        if targets:
+            dests.extend(targets)
+
+        for dest in dests:
+            try:
+                transport.sendto(pkt, (dest, _DHDISCOVER_PORT))
+            except OSError:
+                pass
+
+        first_wait = min(0.4, timeout)
+        await asyncio.sleep(first_wait)
+
+        # Fallback: sweep local /24 via unicast if no DVR/NVR answered multicast/broadcast
+        has_dvr = any(dev["is_dvr"] for dev in found.values())
+        if not has_dvr and len(octets) == 4 and local_ip != "0.0.0.0":
+            prefix = f"{octets[0]}.{octets[1]}.{octets[2]}"
+            for last in range(1, 255):
+                target_ip = f"{prefix}.{last}"
+                if target_ip == local_ip:
+                    continue
+                try:
+                    transport.sendto(pkt, (target_ip, _DHDISCOVER_PORT))
+                except OSError:
+                    break
+
+        remaining = max(0.0, timeout - first_wait)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+    except OSError as exc:
+        _LOGGER.debug("DHDiscover probe failed: %s", exc)
+    finally:
+        if transport is not None:
+            transport.close()
+        else:
+            sock.close()
+
+    return sorted(
+        found.values(),
+        key=lambda d: (not d["is_dvr"], d["ip"]),
+    )
 
 
 class DVRError(Exception):
@@ -122,6 +311,7 @@ class IntelbrasClient:
         self._video_input_caps: dict[int, dict[str, Any]] = {}
         self._video_denoise: dict[int, dict[str, Any]] = {}
         self._image_enhancement: dict[int, dict[str, Any]] = {}
+        self._motion_detect: dict[int, dict[str, Any]] = {}
         self._monitor_caps: list[int] | None = None
         self._latest_fw_version: str | None = None
         self._monitor_lock = asyncio.Lock()
@@ -415,6 +605,17 @@ class IntelbrasClient:
                 if line.startswith("version="):
                     return line.split("=", 1)[1].strip()
         return "Unknown"
+
+    async def get_hardware_version(self) -> str | None:
+        """Return the DVR hardware version string (e.g. 'V1.0') or None if unavailable."""
+        resp = await self._get(f"{MAGICBOX_CGI}?action=getHardwareVersion")
+        if resp.status_code == 200:
+            for line in resp.text.splitlines():
+                if line.startswith("version="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        return val
+        return None
 
     async def get_channel_titles(self, active_only: bool = True) -> dict[int, str]:
         """Return a mapping of zero-based channel index to channel name.
@@ -1152,17 +1353,35 @@ class IntelbrasClient:
             partitions = [part_map[i] for i in sorted(part_map.keys())]
 
         usage_pct = round((used_bytes / total_bytes * 100), 1) if total_bytes > 0 else 0.0
+        total_gb = round(total_bytes / 1_000_000_000, 2) if total_bytes > 0 else 0.0
+        partition_errors = [
+            str(p.get("path") or f"partition_{i}")
+            for i, p in enumerate(partitions)
+            if p.get("is_error")
+        ]
+        healthy = (
+            bad_count == 0
+            and not fs_error
+            and overall_state.strip().lower() in ("normal", "success", "ok")
+        )
+        # Dahua/Intelbras DVRs pre-allocate 100% of disk space on format for circular overwrite.
+        preallocated = total_bytes > 0 and usage_pct >= 99.5
 
         return {
             "bad_disk_count": bad_count,
             "has_bad_disk": bad_count > 0,
             "total_disks": total_disks,
             "overall_state": overall_state,
+            "healthy": healthy,
             "filesystem_error": fs_error,
+            "partition_errors": partition_errors,
             "partitions": partitions,
             "total_bytes": total_bytes,
             "used_bytes": used_bytes,
+            "total_gb": total_gb,
+            "total_human": _format_bytes(total_bytes),
             "usage_percent": usage_pct,
+            "preallocated": preallocated,
             "raw_info": raw_info,
         }
 
@@ -1381,26 +1600,43 @@ class IntelbrasClient:
             )
             if r_find.status_code == 200:
                 item_map: dict[int, dict[str, str]] = {}
-                for line in r_find.text.splitlines():
-                    line = line.strip()
-                    if not line or "=" not in line:
+                last_key: tuple[int, str] | None = None
+                for raw_line in r_find.text.splitlines():
+                    line = raw_line.strip()
+                    if not line:
                         continue
-                    k, v = line.split("=", 1)
-                    m = re.match(r"items\[(\d+)\]\.(\w+)", k.strip())
+                    m = re.match(r"items\[(\d+)\]\.(\w+)=(.*)", line)
                     if m:
                         idx = int(m.group(1))
                         attr = m.group(2)
+                        val = m.group(3).strip()
                         item = item_map.setdefault(idx, {})
-                        item[attr] = v.strip()
+                        item[attr] = val
+                        last_key = (idx, attr)
+                    elif last_key is not None and not line.startswith("found="):
+                        # Dahua log.cgi emits multiline Detail fields without repeating the items[N].Detail= prefix.
+                        idx, attr = last_key
+                        prev = item_map[idx].get(attr, "")
+                        item_map[idx][attr] = f"{prev}\n{line}" if prev else line
 
                 for idx in sorted(item_map.keys()):
                     it = item_map[idx]
+                    detail_raw = it.get("Detail", "")
+                    detail_fields: dict[str, str] = {}
+                    for dline in detail_raw.replace("\\r\\n", "\n").replace("\\n", "\n").splitlines():
+                        dline = dline.strip()
+                        if ":" in dline:
+                            dk, dv = dline.split(":", 1)
+                            dk = dk.strip()
+                            if dk:
+                                detail_fields[dk] = dv.strip()
                     logs.append({
                         "index": idx,
                         "time": it.get("Time", ""),
                         "type": it.get("Type", ""),
                         "user": it.get("User", ""),
-                        "detail": it.get("Detail", ""),
+                        "detail": detail_raw,
+                        "detail_fields": detail_fields,
                     })
         finally:
             try:
@@ -1643,13 +1879,14 @@ class IntelbrasClient:
         """Fetch DVR configuration tables in a single HTTP request.
 
         When ``include_extended`` is False, only lightweight local DVR tables
-        (VideoColor, RecordMode, Encode) are queried to avoid synchronous RPC
-        calls to remote IP cameras on every 60-second poll cycle.
-        When ``include_extended`` is True, VideoWidget, VideoInOptions,
+        (VideoColor, RecordMode) are queried (~13 KB) to avoid both heavy
+        Encode payloads and synchronous RPC calls to remote IP cameras on every
+        60-second poll cycle.
+        When ``include_extended`` is True, Encode, VideoWidget, VideoInOptions,
         VideoInDenoise, and ImageEnhancement are also queried, with automatic
         fallback to the lightweight local tables if an IP camera RPC times out.
         """
-        base_tables = ["VideoColor", "RecordMode", "Encode"]
+        base_tables = ["VideoColor", "RecordMode"]
         extended_tables = [
             "VideoColor",
             "RecordMode",
@@ -2029,7 +2266,8 @@ class IntelbrasClient:
                 self._video_in_options.setdefault(ch, {})["night_gain_auto"] = m_nga.group(2).lower() == "true"
                 continue
 
-        self._parse_encode_config(resp.text)
+        if used_extended:
+            self._parse_encode_config(resp.text)
         encode_info = self._encode_config
 
         for ch in channels:
@@ -2050,11 +2288,158 @@ class IntelbrasClient:
         self._video_color = colors
         return colors, modes, encode_info, video_widget, video_in_options
 
+    # ------------------------------------------------------------------
+    # Generic ConfigManager access & MotionDetect
+    # ------------------------------------------------------------------
+
+    async def get_config(self, name: str) -> dict[str, str]:
+        """Fetch any DVR configManager table as a flat key/value dictionary.
+
+        Strips the leading ``table.`` prefix returned by Dahua/Intelbras firmware
+        so keys can be passed directly back to ``set_config``.
+        """
+        resp = await self._get(
+            CONFIG_MANAGER_CGI,
+            params={"action": "getConfig", "name": name},
+            timeout=10.0,
+        )
+        if resp.status_code != 200:
+            raise DVRError(f"getConfig({name}) failed with HTTP {resp.status_code}")
+
+        result: dict[str, str] = {}
+        for raw_line in resp.text.splitlines():
+            line = raw_line.strip()
+            if not line or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            if key.startswith("table."):
+                key = key[6:]
+            result[key] = val.strip()
+        return result
+
+    async def set_config(self, params: dict[str, Any]) -> bool:
+        """Write one or more DVR configManager parameters.
+
+        Converts empty strings to a single space (``" "``) because Dahua/Intelbras
+        firmware ignores bare ``Key=`` parameters and trims ``" "`` back to empty.
+        """
+        if not params:
+            return False
+        parts = ["action=setConfig"]
+        for key, raw_val in params.items():
+            if isinstance(raw_val, bool):
+                val_str = "true" if raw_val else "false"
+            elif raw_val is None or raw_val == "":
+                val_str = " "
+            else:
+                val_str = str(raw_val)
+            parts.append(
+                f"{urllib.parse.quote(str(key), safe='[].')}=%s"
+                % urllib.parse.quote(val_str, safe="")
+            )
+        resp = await self._get(
+            f"{CONFIG_MANAGER_CGI}?{'&'.join(parts)}",
+            timeout=10.0,
+        )
+        return resp.status_code == 200 and "ok" in resp.text.lower()
+
+    async def get_motion_detect_config(self) -> dict[int, dict[str, Any]]:
+        """Fetch per-channel MotionDetect configuration from the DVR."""
+        resp = await self._get(
+            CONFIG_MANAGER_CGI,
+            params={"action": "getConfig", "name": "MotionDetect"},
+            timeout=10.0,
+        )
+        if resp.status_code != 200:
+            return self._motion_detect
+
+        motion: dict[int, dict[str, Any]] = {}
+        enable_re = re.compile(r"table\.MotionDetect\[(\d+)\]\.Enable=(true|false)", re.I)
+        sens_re = re.compile(
+            r"table\.MotionDetect\[(\d+)\]\.MotionDetectWindow\[0\]\.Sensitive=(\d+)"
+        )
+        thresh_re = re.compile(
+            r"table\.MotionDetect\[(\d+)\]\.MotionDetectWindow\[0\]\.Threshold=(\d+)"
+        )
+        eh_bool_re = re.compile(
+            r"table\.MotionDetect\[(\d+)\]\.EventHandler\.(WarmLightEnable|BeepEnable|RecordEnable)=(true|false)",
+            re.I,
+        )
+        eh_latch_re = re.compile(
+            r"table\.MotionDetect\[(\d+)\]\.EventHandler\.RecordLatch=(\d+)"
+        )
+
+        for raw_line in resp.text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            m = enable_re.match(line)
+            if m:
+                motion.setdefault(int(m.group(1)), {})["enable"] = (
+                    m.group(2).lower() == "true"
+                )
+                continue
+            m = sens_re.match(line)
+            if m:
+                motion.setdefault(int(m.group(1)), {})["sensitivity"] = int(m.group(2))
+                continue
+            m = thresh_re.match(line)
+            if m:
+                motion.setdefault(int(m.group(1)), {})["threshold"] = int(m.group(2))
+                continue
+            m = eh_bool_re.match(line)
+            if m:
+                ch = int(m.group(1))
+                attr_map = {
+                    "WarmLightEnable": "warm_light_enable",
+                    "BeepEnable": "beep_enable",
+                    "RecordEnable": "record_enable",
+                }
+                motion.setdefault(ch, {})[attr_map[m.group(2)]] = (
+                    m.group(3).lower() == "true"
+                )
+                continue
+            m = eh_latch_re.match(line)
+            if m:
+                motion.setdefault(int(m.group(1)), {})["record_latch"] = int(m.group(2))
+                continue
+
+        if motion:
+            self._motion_detect = motion
+        return self._motion_detect
+
+    async def set_motion_detect_enabled(self, channel: int, enabled: bool) -> bool:
+        """Enable or disable motion detection on a specific channel."""
+        ok = await self.set_config({f"MotionDetect[{channel}].Enable": enabled})
+        if ok:
+            self._motion_detect.setdefault(channel, {})["enable"] = enabled
+        return ok
+
+    async def set_motion_detect_param(
+        self, channel: int, field: str, value: int
+    ) -> bool:
+        """Update MotionDetect sensitivity or threshold on a specific channel."""
+        key_map = {
+            "sensitivity": f"MotionDetect[{channel}].MotionDetectWindow[0].Sensitive",
+            "threshold": f"MotionDetect[{channel}].MotionDetectWindow[0].Threshold",
+        }
+        cfg_key = key_map.get(field)
+        if cfg_key is None:
+            return False
+        clamped = max(0, min(100, int(value)))
+        ok = await self.set_config({cfg_key: clamped})
+        if ok:
+            self._motion_detect.setdefault(channel, {})[field] = clamped
+        return ok
+
     async def set_custom_title_text(
         self, channel: int, text: str, index: int = 0
     ) -> bool:
         """Set custom OSD text on the camera channel (VideoWidget)."""
-        encoded_text = urllib.parse.quote(text, safe="")
+        # Dahua/Intelbras firmware ignores bare empty string; sending a single space clears the text.
+        send_val = " " if text == "" else text
+        encoded_text = urllib.parse.quote(send_val, safe="")
         resp = await self._get(
             f"{CONFIG_MANAGER_CGI}?action=setConfig&VideoWidget[{channel}].CustomTitle[{index}].Text={encoded_text}",
             timeout=6.0,
@@ -2774,7 +3159,9 @@ class IntelbrasClient:
 
     async def set_channel_title(self, channel: int, title: str) -> bool:
         """Set on-screen channel title name."""
-        encoded_title = urllib.parse.quote(title, safe="")
+        # Dahua/Intelbras firmware ignores bare empty string; sending a single space clears the title.
+        send_val = " " if title == "" else title
+        encoded_title = urllib.parse.quote(send_val, safe="")
         resp = await self._get(
             f"{CONFIG_MANAGER_CGI}?action=setConfig&ChannelTitle[{channel}].Name={encoded_title}",
             timeout=6.0,

@@ -17,6 +17,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_CHANNELS,
+    CONF_FEATURES,
     CONF_MONITOR_EVENTS,
     CONF_MONITOR_NETWORK,
     CONF_MONITOR_STORAGE,
@@ -32,6 +33,7 @@ from .const import (
     LOGIN_LOCKOUT_BACKOFF,
     RECORD_MODE_SCHEDULE,
     SLOW_DIAGNOSTICS_INTERVAL,
+    CameraFeature,
 )
 from .dvr import DVRAuthError, DVRConnectionError, IntelbrasClient
 
@@ -43,6 +45,7 @@ class DVRRuntimeState(TypedDict, total=False):
 
     system_info: dict[str, str]
     software_version: str | None
+    hardware_version: str | None
     remote_devices: dict[int, dict[str, Any]]
     monitor_caps: list[int]
     total_channels: int
@@ -51,6 +54,7 @@ class DVRRuntimeState(TypedDict, total=False):
     storage_info: dict[str, Any]
     record_modes: dict[int, int]
     encode_info: dict[int, dict[str, Any]]
+    motion_detect: dict[int, dict[str, Any]]
     video_widget: dict[int, dict[str, Any]]
     video_in_options: dict[int, dict[str, Any]]
     video_input_caps: dict[int, dict[str, Any]]
@@ -122,6 +126,8 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
 
         self._cached_system_info: dict[str, str] | None = None
         self._cached_software_version: str | None = None
+        self._cached_hardware_version: str | None = None
+        self._hw_version_loaded: bool = False
         self._cached_remote_devices: dict[int, dict[str, Any]] | None = None
         self._cached_monitor_caps: list[int] | None = None
         self._cached_user_permissions: dict[str, Any] | None = None
@@ -130,6 +136,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         self._presets_loaded: bool = False
         self._video_caps_loaded: bool = False
         self._last_slow_poll: float = 0.0
+        self._cached_motion_detect: dict[int, dict[str, Any]] = {}
         self._cached_storage_info: dict[str, Any] = {}
         self._cached_storage_diagnostics: dict[str, Any] = {}
         self._cached_network_interfaces: list[dict[str, Any]] = []
@@ -314,6 +321,18 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
                             self._cached_system_info.get("softwareVersion")
                             or self._cached_system_info.get("version")
                         )
+
+                if not self._hw_version_loaded:
+                    try:
+                        self._cached_hardware_version = (
+                            await self.client.get_hardware_version()
+                        )
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_hardware_version error: %s", exc)
+                    finally:
+                        self._hw_version_loaded = True
 
                 if not self._titles_synced:
                     try:
@@ -500,6 +519,24 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
                     except Exception as exc:  # noqa: BLE001
                         _LOGGER.debug("DVR get_network_interfaces error: %s", exc)
 
+                features_map: dict[str, list[str]] = self.config_entry.data.get(
+                    CONF_FEATURES, {}
+                )
+                has_motion_feature = any(
+                    features_map.get(str(ch)) is None
+                    or CameraFeature.MOTION in features_map.get(str(ch), [])
+                    for ch in channels
+                )
+                if has_motion_feature:
+                    try:
+                        md = await self.client.get_motion_detect_config()
+                        if isinstance(md, dict) and md:
+                            self._cached_motion_detect = md
+                    except DVRAuthError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        _LOGGER.debug("DVR get_motion_detect_config error: %s", exc)
+
             self._last_response_time_ms = round((time.monotonic() - t0) * 1000, 1)
             _LOGGER.debug(
                 "DVR poll completed in %.1f ms (slow_poll=%s, monitor_mode=%r)",
@@ -575,6 +612,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         return {
             "system_info": self._cached_system_info or {},
             "software_version": self._cached_software_version,
+            "hardware_version": self._cached_hardware_version,
             "remote_devices": self._cached_remote_devices or {},
             "monitor_caps": self._cached_monitor_caps or [1, 4, 8, 9, 16],
             "total_channels": total_channels,
@@ -583,6 +621,7 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
             "storage_info": storage_info,
             "record_modes": record_modes,
             "encode_info": encode_info,
+            "motion_detect": self._cached_motion_detect,
             "video_widget": video_widget,
             "video_in_options": video_in_options,
             "video_input_caps": self.client._video_input_caps,
@@ -1032,6 +1071,52 @@ class IntelbrasCoordinator(DataUpdateCoordinator[DVRRuntimeState]):
         if opt == "regular":
             return 2
         return self.client.get_active_profile_index(channel)
+
+    def get_motion_detect_info(self, channel: int) -> dict[str, Any]:
+        """Return cached MotionDetect metadata for a channel."""
+        md_map: dict[int, dict[str, Any]] = (
+            (self.data or {}).get("motion_detect") or self._cached_motion_detect
+        )
+        return md_map.get(channel, {})
+
+    def is_motion_detection_enabled(self, channel: int) -> bool | None:
+        """Return True/False if motion detection state is known for a channel."""
+        info = self.get_motion_detect_info(channel)
+        val = info.get("enable")
+        return bool(val) if val is not None else None
+
+    async def async_set_motion_detection_enabled(
+        self, channel: int, enabled: bool
+    ) -> bool:
+        """Toggle motion detection for a channel and update cached coordinator state."""
+        ok = await self.client.set_motion_detect_enabled(channel, enabled)
+        if ok:
+            self._cached_motion_detect.setdefault(channel, {})["enable"] = enabled
+            if self.data is not None:
+                md = dict(self.data.get("motion_detect") or self._cached_motion_detect)
+                ch_md = dict(md.get(channel, {}))
+                ch_md["enable"] = enabled
+                md[channel] = ch_md
+                self.data["motion_detect"] = md
+                self.async_set_updated_data(dict(self.data))
+        return ok
+
+    async def async_set_motion_detect_param(
+        self, channel: int, field: str, value: int
+    ) -> bool:
+        """Update motion detection sensitivity or threshold and update cached state."""
+        ok = await self.client.set_motion_detect_param(channel, field, value)
+        if ok:
+            clamped = max(0, min(100, int(value)))
+            self._cached_motion_detect.setdefault(channel, {})[field] = clamped
+            if self.data is not None:
+                md = dict(self.data.get("motion_detect") or self._cached_motion_detect)
+                ch_md = dict(md.get(channel, {}))
+                ch_md[field] = clamped
+                md[channel] = ch_md
+                self.data["motion_detect"] = md
+                self.async_set_updated_data(dict(self.data))
+        return ok
 
 
 

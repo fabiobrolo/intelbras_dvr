@@ -11,6 +11,8 @@
 [🇺🇸 English](README.md) | [🇧🇷 Português](README.pt-BR.md)
 
 > ⚠️ **Aviso Legal**: Intelbras® e Dahua® são marcas registradas de seus respectivos proprietários. Esta é uma integração comunitária não oficial sem qualquer afiliação, endosso ou suporte da Intelbras S.A. ou Dahua Technology.
+>
+> 📌 **Escopo (Foco em DVRs e NVRs):** Esta integração foi projetada como um **hub** para **DVRs e NVRs Intelbras/Dahua** (dispositivo gravador principal + dispositivos filhos por canal de câmera). Ela **não** é voltada para câmeras IP unitárias/avulsas — se suas câmeras IP estão conectadas ao DVR/NVR, gerencie-as pela própria entrada do DVR/NVR; para câmeras IP avulsas sem gravador, utilize uma integração dedicada de câmera IP (como ONVIF ou Generic Camera).
 
 ---
 
@@ -140,6 +142,8 @@ Modelos e capacidades verificados:
 | `number` | `acutance` | Configuração | Ajuste de vídeo / nitidez (`0`–`15`) por perfil |
 | `number` | `noise_reduction` | Configuração | Controle deslizante de Redução de Ruído 2D (`0`–`100`%) por perfil |
 | `number` | `image_gain` | Configuração | Controle deslizante de Ganho de Imagem (`0`–`100`%) por perfil |
+| `number` | `motion_sensitivity`, `motion_threshold` | Configuração | Controles deslizantes de Sensibilidade e Limiar de detecção de movimento (`0`–`100`) por canal |
+| `switch` | `motion_detection_enable` | Configuração | Ativar ou desativar a detecção de movimento do DVR por canal (expõe sensibilidade, limiar, luz quente, bipe e gravação) |
 | `switch` | `auto_noise_reduction` | Configuração | Chave de Redução Automática de Ruído (`GainAuto`) por perfil |
 | `switch` | `privacy_mask` | Nenhuma | Mascaramento (escurecimento total) ou restauração da imagem de vídeo |
 | `switch` | `channel_title_overlay` | Configuração | Exibir ou ocultar a sobreposição do nome do canal no vídeo |
@@ -179,10 +183,10 @@ Para proteger o servidor HTTP/CGI embarcado do DVR contra sobrecarga (especialme
 | Camada de Atualização | Intervalo | Dados e Endpoints Consultados | Atualização Imediata sob Demanda |
 |---|---|---|---|
 | **Push em Tempo Real** | Contínuo (`heartbeat=5s`) | Stream HTTP persistente (`eventManager.cgi?action=attach`): Movimento, Smart Motion (Humano/Veículo), IVS (Linha/Cerca Virtual), Perda de Vídeo, Mascaramento, Alertas de HD e Falha de Login | Instantâneo (sem polling) |
-| **Polling Rápido (Local no DVR)** | A cada **60 s** | Apenas tabelas leves locais do DVR (`VideoColor`, `RecordMode`, `Encode` — sem RPC síncrono para câmeras IP remotas), Modo do Monitor (`split.cgi`), Usuários Conectados (`userManager.cgi`) e Hora do DVR (`global.cgi`) | Ao alterar saída de monitor, modo de gravação ou ajustes básicos de imagem |
-| **Polling Lento (Estendido e Diagnóstico)** | A cada **5 min (300 s)** | Configurações estendidas de câmera (`VideoWidget`, `VideoInOptions`, `VideoInDenoise`, `ImageEnhancement` — com fallback automático para tabelas locais caso algum RPC de câmera IP dê timeout), Diagnóstico e Uso de HD (`storageDevice.cgi`, sem chamadas duplicadas), Interface e Velocidade de Rede (`netApp.cgi`) e Status PTZ (`ptz.cgi`) | Ao pressionar **Atualizar dados** / **Atualizar câmera** / **Atualizar diagnóstico do HD**, ou ao editar qualquer entidade de perfil, OSD, compensação de luz ou redução de ruído no HA |
+| **Polling Rápido (Local no DVR)** | A cada **60 s** | Apenas tabelas leves locais do DVR (`VideoColor`, `RecordMode` — ~13 KB, sem o peso do `Encode` e sem RPC síncrono para câmeras IP remotas), Modo do Monitor (`split.cgi`), Usuários Conectados (`userManager.cgi`) e Hora do DVR (`global.cgi`) | Ao alterar saída de monitor, modo de gravação ou ajustes básicos de imagem |
+| **Polling Lento (Estendido e Diagnóstico)** | A cada **5 min (300 s)** | Configurações estendidas de câmera (`Encode`, `VideoWidget`, `VideoInOptions`, `VideoInDenoise`, `ImageEnhancement` — com fallback automático para tabelas locais caso algum RPC de câmera IP dê timeout), Detecção de Movimento por Canal (`MotionDetect`), Diagnóstico e Uso de HD (`storageDevice.cgi`, sem chamadas duplicadas, com atributos `healthy`, `total_human` e `preallocated_disk`), Interface e Velocidade de Rede (`netApp.cgi`) e Status PTZ (`ptz.cgi`) | Ao pressionar **Atualizar dados** / **Atualizar câmera** / **Atualizar diagnóstico do HD**, alternar detecção de movimento, ou editar qualquer entidade de perfil, OSD, compensação de luz ou redução de ruído no HA |
 | **Verificação de Firmware** | A cada **6 horas** | Verificação de nova versão de firmware (`CloudUpgrader/check` / `upgrade.cgi`) | Na inicialização da integração |
-| **Cache Único (Inicialização)** | Startup / Reconfiguração | Dados de hardware (`magicBox.cgi`), Títulos dos canais e Dispositivos IP remotos, Capacidades de hardware (`encode.cgi?action=getCaps`, `devVideoInput.cgi?action=getCaps`), Predefinições PTZ e Auditoria de permissões do usuário (`userManager.cgi?action=getUserInfo`) | Ao recarregar ou reconfigurar a integração |
+| **Cache Único (Inicialização)** | Startup / Reconfiguração | Dados e versão de hardware (`magicBox.cgi?action=getSystemInfo`, `getSoftwareVersion`, `getHardwareVersion`), Títulos dos canais e Dispositivos IP remotos, Capacidades de hardware (`encode.cgi?action=getCaps`, `devVideoInput.cgi?action=getCaps`), Predefinições PTZ e Auditoria de permissões do usuário (`userManager.cgi?action=getUserInfo`) | Ao recarregar ou reconfigurar a integração |
 | **Instantâneos (Snapshots)** | Configurável (`0,5s`–`30s`, padrão `1,0s`) | `snapshot.cgi` (requisitado apenas enquanto estiver sendo visualizado ativamente em um dashboard) | Dinâmico via `number.*_taxa_de_atualizacao_dos_instantaneos` |
 
 ---
@@ -226,7 +230,7 @@ Antes de adicionar a integração, é **fortemente recomendado** criar uma conta
 
 1. No Home Assistant, acesse **Configurações > Dispositivos e Serviços > Adicionar Integração**.
 2. Pesquise por **Intelbras DVR**.
-3. **Passo 1 - Conexão:** Informe o endereço host/IP, usuário, senha, porta HTTP (padrão `80`) e porta RTSP (padrão `554`).
+3. **Passo 1 - Conexão:** O fluxo de configuração faz uma busca automática na rede local via **DHDiscover (UDP 37810)** para listar **DVRs e NVRs** Intelbras/Dahua ainda não configurados, sem exigir credenciais (câmeras IP unitárias e gravadores já cadastrados são filtrados automaticamente). Selecione um DVR/NVR descoberto na lista ou digite qualquer host/IP manualmente, e informe usuário, senha, porta HTTP (padrão `80`) e porta RTSP (padrão `554`).
 4. **Passo 2 - Canais de Câmera:** A integração descobre automaticamente todos os canais ativos, seus nomes e suporte a PTZ. Selecione as câmeras que deseja importar.
 5. **Passo 3 - Seleção de Recursos:** Habilite os conjuntos de recursos desejados (`main_stream`, `sub_stream`, `snapshot`, `motion`, `video_color`, `profiles`, `overlay`, `ptz`, `recording`, etc.) e as opções de monitoramento de sistema.
 
@@ -247,8 +251,12 @@ Antes de adicionar a integração, é **fortemente recomendado** criar uma conta
 | `intelbras_dvr.ptz_move` | Move uma câmera PTZ em uma direção com parada automática | `channel` (`1`–`32`), `direction`, `speed` (`1`–`8`), `duration` (`0.1`–`10.0`s) |
 | `intelbras_dvr.ptz_stop` | Interrompe o movimento PTZ em andamento | `channel` (`1`–`32`), `direction` |
 | `intelbras_dvr.ptz_preset` | Move a câmera PTZ para uma predefinição salva no hardware | `channel` (`1`–`32`), `preset` (`1`–`255`) |
-| `intelbras_dvr.get_logs` | Consulta registros estruturados de auditoria e eventos do sistema | `count` (`1`–`100`), `log_type` |
+| `intelbras_dvr.get_logs` | Consulta registros estruturados de auditoria e eventos do sistema (incluindo `detail_fields` estruturado) | `count` (`1`–`100`), `log_type`, `start_time`, `end_time` |
+| `intelbras_dvr.get_config` | Lê qualquer tabela `configManager` do DVR pelo nome (retorna dados de resposta) | `name` (ex.: `MotionDetect`, `Encode`, `NTP`) |
+| `intelbras_dvr.set_config` | Grava diretamente um ou mais parâmetros `configManager` no DVR | `params` (mapa chave/valor; strings vazias limpam campos automaticamente) |
 | `intelbras_dvr.reboot` | Reinicializa o hardware do DVR | `entry_id` (opcional) |
+
+> 💾 **Nota sobre Uso de Disco (`100%`):** DVRs Intelbras/Dahua pré-alocam 100% do espaço do HD na formatação para gravação circular. Exibir `100,0%` em `sensor.*_uso_de_disco` é normal — consulte os atributos `healthy` e `preallocated_disk` nos sensores de Status do HD e Uso de Disco para verificar a saúde real do disco.
 
 ---
 

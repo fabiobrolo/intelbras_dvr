@@ -22,6 +22,9 @@ TO_REDACT = {
     CONF_USERNAME,
     CONF_PASSWORD,
     "host",
+    "ip",
+    "ip_address",
+    "configuration_url",
     "password",
     "username",
     "serialNumber",
@@ -62,11 +65,14 @@ async def async_get_config_entry_diagnostics(
             "consecutive_failures": coord_data.get("consecutive_failures", 0),
             "system_time": coord_data.get("system_time"),
             "software_version": coord_data.get("software_version"),
+            "hardware_version": coord_data.get("hardware_version"),
             "system_info": async_redact_data(coord_data.get("system_info", {}), TO_REDACT),
             "total_channels": coord_data.get("total_channels"),
             "monitor_caps": coord_data.get("monitor_caps"),
             "monitor_mode": coord_data.get("monitor_mode"),
             "video_color": coord_data.get("video_color"),
+            "encode_info": coord_data.get("encode_info"),
+            "motion_detect": coord_data.get("motion_detect"),
             "video_widget": coord_data.get("video_widget"),
             "video_in_options": coord_data.get("video_in_options"),
             "video_input_caps": coord_data.get("video_input_caps"),
@@ -75,6 +81,14 @@ async def async_get_config_entry_diagnostics(
             "ptz_presets": coord_data.get("ptz_presets"),
             "ptz_status": coord_data.get("ptz_status"),
             "record_modes": coord_data.get("record_modes"),
+            "firmware_update": coord_data.get("firmware_update"),
+            "remote_devices": {
+                str(ch): async_redact_data(info, TO_REDACT)
+                for ch, info in (coord_data.get("remote_devices") or {}).items()
+            },
+            "selected_config_profile": (
+                dict(coordinator._selected_config_profile) if coordinator else {}
+            ),
             "storage_info": coord_data.get("storage_info"),
             "storage_diagnostics": coord_data.get("storage_diagnostics"),
             "network_interfaces": [
@@ -92,12 +106,23 @@ async def async_get_config_entry_diagnostics(
         "event_coordinator": {
             "stream_connected": event_coordinator.stream_connected if event_coordinator else False,
             "reconnect_count": event_coordinator.reconnect_count if event_coordinator else 0,
+            "last_heartbeat": event_coordinator.last_heartbeat if event_coordinator else None,
+            "system_events": dict(event_coordinator.system_events) if event_coordinator else {},
             "active_events": event_data,
         },
         "client": {
             "total_channels": client.total_channels if client else None,
             "channel_names": client.channel_names if client else {},
+            "channel_signal_formats": (
+                dict(client._channel_signal_formats) if client else {}
+            ),
             "remote_channel_count": len(client.remote_devices) if client else 0,
+            "video_color_by_profile": (
+                dict(client._video_color_by_profile) if client else {}
+            ),
+            "video_color_periods": (
+                dict(client._video_color_periods) if client else {}
+            ),
             "auth_lockout_remaining": client.auth_lockout_remaining if client else 0,
         },
     }

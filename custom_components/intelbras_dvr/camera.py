@@ -153,8 +153,8 @@ class DVRBaseCamera(CoordinatorEntity[IntelbrasCoordinator], Camera):
         return {"extra_arguments": "-rtsp_transport tcp"}
 
     def _encode_attributes(self, stream_key: str) -> dict[str, Any]:
-        """Extract stream encode attributes (resolution, fps, bitrate, codec)."""
-        attrs = dict(super().extra_state_attributes)
+        """Extract stream encode attributes (resolution, fps, bitrate, codec, audio)."""
+        attrs: dict[str, Any] = {"extra_arguments": "-rtsp_transport tcp"}
         enc = (
             (self.coordinator.data or {})
             .get("encode_info", {})
@@ -162,22 +162,42 @@ class DVRBaseCamera(CoordinatorEntity[IntelbrasCoordinator], Camera):
             .get(stream_key, {})
         )
         if enc:
-            if "resolution" in enc:
-                attrs["resolution"] = enc["resolution"]
-            if "FPS" in enc:
+            resolution = enc.get("Video.resolution") or enc.get("resolution")
+            if not resolution:
+                width = enc.get("Video.Width") or enc.get("Width")
+                height = enc.get("Video.Height") or enc.get("Height")
+                if width and height:
+                    resolution = f"{width}x{height}"
+            if resolution:
+                attrs["resolution"] = resolution
+
+            fps = enc.get("Video.FPS") or enc.get("FPS")
+            if fps is not None:
                 try:
-                    attrs["fps"] = int(float(enc["FPS"]))
+                    attrs["fps"] = int(float(fps))
                 except (ValueError, TypeError):
-                    attrs["fps"] = enc["FPS"]
-            if "BitRate" in enc:
+                    attrs["fps"] = fps
+
+            bitrate = enc.get("Video.BitRate") or enc.get("BitRate")
+            if bitrate is not None:
                 try:
-                    attrs["bitrate_kbps"] = int(enc["BitRate"])
+                    attrs["bitrate_kbps"] = int(bitrate)
                 except (ValueError, TypeError):
-                    attrs["bitrate_kbps"] = enc["BitRate"]
-            if "Compression" in enc:
-                attrs["codec"] = enc["Compression"]
-            if "BitRateControl" in enc:
-                attrs["bitrate_control"] = enc["BitRateControl"]
+                    attrs["bitrate_kbps"] = bitrate
+
+            codec = enc.get("Video.Compression") or enc.get("Compression")
+            if codec:
+                attrs["codec"] = codec
+
+            bitrate_ctrl = enc.get("Video.BitRateControl") or enc.get("BitRateControl")
+            if bitrate_ctrl:
+                attrs["bitrate_control"] = bitrate_ctrl
+
+            if "AudioEnable" in enc:
+                attrs["audio_enabled"] = str(enc["AudioEnable"]).lower() == "true"
+            audio_codec = enc.get("Audio.Compression")
+            if audio_codec:
+                attrs["audio_codec"] = audio_codec
         return attrs
 
     async def async_camera_image(
@@ -335,6 +355,11 @@ class DVRSnapshotCamera(DVRBaseCamera):
         """Initialise the snapshot-only camera."""
         super().__init__(coordinator, entry, channel, channel_name)
         self._attr_unique_id = f"{entry.entry_id}_ch{channel}_snapshot"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return main stream encode metadata attributes for this channel."""
+        return self._encode_attributes("main")
 
     async def stream_source(self) -> str | None:
         """Return None as snapshot entity does not stream video."""

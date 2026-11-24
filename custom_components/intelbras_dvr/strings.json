@@ -271,6 +271,12 @@
       },
       "snapshot_interval": {
         "name": "Snapshot update interval"
+      },
+      "motion_sensitivity": {
+        "name": "Motion sensitivity"
+      },
+      "motion_threshold": {
+        "name": "Motion threshold"
       }
     },
     "select": {
@@ -426,6 +432,9 @@
       },
       "period_2_active": {
         "name": "Period 2 active"
+      },
+      "motion_detection_enable": {
+        "name": "Motion detection"
       }
     },
     "update": {
@@ -531,6 +540,15 @@
     },
     "set_analog_period_time_failed": {
       "message": "Failed to update schedule for Period {period} on channel {channel}."
+    },
+    "set_motion_detection_failed": {
+      "message": "Failed to update motion detection setting on channel {channel}."
+    },
+    "get_config_failed": {
+      "message": "Failed to read configuration table '{name}' from the DVR."
+    },
+    "set_config_failed": {
+      "message": "Failed to write configuration parameters to the DVR."
     }
   },
   "issues": {
@@ -739,6 +757,34 @@
         "end_time": {
           "name": "End Time",
           "description": "End timestamp in YYYY-MM-DD HH:MM:SS format (default: now)."
+        }
+      }
+    },
+    "get_config": {
+      "name": "Get DVR config",
+      "description": "Query any DVR configManager table by name.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "The config entry ID of the DVR (optional if only one DVR is configured)."
+        },
+        "name": {
+          "name": "Table Name",
+          "description": "Name of the configManager table to read (e.g. MotionDetect, Encode, RecordMode, NTP)."
+        }
+      }
+    },
+    "set_config": {
+      "name": "Set DVR config",
+      "description": "Write one or more DVR configManager parameters directly.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "The config entry ID of the DVR (optional if only one DVR is configured)."
+        },
+        "params": {
+          "name": "Parameters",
+          "description": "Key/value mapping of configManager parameters to write (without leading 'table.' prefix)."
         }
       }
     }

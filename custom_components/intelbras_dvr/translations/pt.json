@@ -271,6 +271,12 @@
       },
       "snapshot_interval": {
         "name": "Taxa de atualização dos instantâneos"
+      },
+      "motion_sensitivity": {
+        "name": "Sensibilidade de movimento"
+      },
+      "motion_threshold": {
+        "name": "Limiar de movimento"
       }
     },
     "select": {
@@ -426,6 +432,9 @@
       },
       "period_2_active": {
         "name": "Período 2 ativo"
+      },
+      "motion_detection_enable": {
+        "name": "Detecção de movimento"
       }
     },
     "update": {
@@ -531,6 +540,15 @@
     },
     "set_analog_period_time_failed": {
       "message": "Falha ao atualizar o horário do Período {period} no canal {channel}."
+    },
+    "set_motion_detection_failed": {
+      "message": "Falha ao atualizar a configuração de detecção de movimento no canal {channel}."
+    },
+    "get_config_failed": {
+      "message": "Falha ao ler a tabela de configuração '{name}' no DVR."
+    },
+    "set_config_failed": {
+      "message": "Falha ao gravar os parâmetros de configuração no DVR."
     }
   },
   "issues": {
@@ -739,6 +757,34 @@
         "end_time": {
           "name": "Data e Hora Final",
           "description": "Horário final no formato AAAA-MM-DD HH:MM:SS (padrão: agora)."
+        }
+      }
+    },
+    "get_config": {
+      "name": "Obter configuração do DVR",
+      "description": "Consulta qualquer tabela configManager do DVR pelo nome.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Entrada",
+          "description": "ID da entrada de configuração do DVR (opcional se houver apenas um DVR configurado)."
+        },
+        "name": {
+          "name": "Nome da Tabela",
+          "description": "Nome da tabela configManager para leitura (ex.: MotionDetect, Encode, RecordMode, NTP)."
+        }
+      }
+    },
+    "set_config": {
+      "name": "Definir configuração do DVR",
+      "description": "Grava diretamente um ou mais parâmetros configManager no DVR.",
+      "fields": {
+        "entry_id": {
+          "name": "ID da Entrada",
+          "description": "ID da entrada de configuração do DVR (opcional se houver apenas um DVR configurado)."
+        },
+        "params": {
+          "name": "Parâmetros",
+          "description": "Mapa chave/valor de parâmetros configManager para gravação (sem o prefixo 'table.')."
         }
       }
     }

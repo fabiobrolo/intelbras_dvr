@@ -144,6 +144,28 @@ IMAGE_GAIN_DESCRIPTION = NumberEntityDescription(
 )
 IMAGE_ENHANCEMENT_DESCRIPTION = IMAGE_GAIN_DESCRIPTION
 
+MOTION_SENSITIVITY_DESCRIPTION = NumberEntityDescription(
+    key="motion_sensitivity",
+    translation_key="motion_sensitivity",
+    icon="mdi:motion-sensor",
+    mode=NumberMode.SLIDER,
+    native_min_value=0,
+    native_max_value=100,
+    native_step=1,
+    entity_category=EntityCategory.CONFIG,
+)
+
+MOTION_THRESHOLD_DESCRIPTION = NumberEntityDescription(
+    key="motion_threshold",
+    translation_key="motion_threshold",
+    icon="mdi:tune",
+    mode=NumberMode.SLIDER,
+    native_min_value=0,
+    native_max_value=100,
+    native_step=1,
+    entity_category=EntityCategory.CONFIG,
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -192,6 +214,31 @@ async def async_setup_entry(
             if coordinator.supports_image_enhancement(ch):
                 entities.append(
                     CameraImageGainNumber(coordinator, entry, ch, ch_name)
+                )
+
+        if CameraFeature.MOTION in feats:
+            md_info = coordinator.get_motion_detect_info(ch)
+            if "sensitivity" in md_info:
+                entities.append(
+                    CameraMotionDetectNumber(
+                        coordinator,
+                        entry,
+                        ch,
+                        ch_name,
+                        MOTION_SENSITIVITY_DESCRIPTION,
+                        "sensitivity",
+                    )
+                )
+            if "threshold" in md_info:
+                entities.append(
+                    CameraMotionDetectNumber(
+                        coordinator,
+                        entry,
+                        ch,
+                        ch_name,
+                        MOTION_THRESHOLD_DESCRIPTION,
+                        "threshold",
+                    )
                 )
 
     async_add_entities(entities)
@@ -441,3 +488,55 @@ class CameraImageGainNumber(CameraChannelEntity, NumberEntity):
 
 # Backward compatibility alias
 CameraImageEnhancementNumber = CameraImageGainNumber
+
+
+class CameraMotionDetectNumber(CameraChannelEntity, NumberEntity):
+    """Number entity controlling MotionDetect sensitivity or threshold (0..100)."""
+
+    _attr_mode = NumberMode.SLIDER
+
+    def __init__(
+        self,
+        coordinator: IntelbrasCoordinator,
+        entry: IntelbrasDVRConfigEntry,
+        channel: int,
+        channel_name: str,
+        description: NumberEntityDescription,
+        md_field: str,
+    ) -> None:
+        """Initialise the motion detection number entity."""
+        super().__init__(coordinator, entry, channel, channel_name)
+        self.entity_description = description
+        self._md_field = md_field
+        self._attr_unique_id = f"{entry.entry_id}_ch{channel}_{description.key}"
+        self._optimistic_value: float | None = None
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current motion detection parameter value."""
+        if self._optimistic_value is not None:
+            return self._optimistic_value
+        val = self.coordinator.get_motion_detect_info(self._channel).get(self._md_field)
+        return float(val) if val is not None else None
+
+    def _handle_coordinator_update(self) -> None:
+        """Reset optimistic value on coordinator refresh."""
+        self._optimistic_value = None
+        super()._handle_coordinator_update()
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Write updated motion detection sensitivity or threshold to the DVR."""
+        val = int(value)
+        self._optimistic_value = float(val)
+        self.async_write_ha_state()
+        ok = await self.coordinator.async_set_motion_detect_param(
+            self._channel, self._md_field, val
+        )
+        self._optimistic_value = None
+        self.async_write_ha_state()
+        if not ok:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="set_motion_detection_failed",
+                translation_placeholders={"channel": str(self._channel)},
+            )

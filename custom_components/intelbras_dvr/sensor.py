@@ -227,13 +227,22 @@ class DVRDiskUsageSensor(DVREntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return raw storage capacity and health attributes."""
+        """Return storage capacity, pre-allocation indicator, and raw health attributes."""
         storage: dict[str, Any] = (self.coordinator.data or {}).get("storage_info", {})
-        return {
+        diag: dict[str, Any] = (self.coordinator.data or {}).get(
+            "storage_diagnostics", {}
+        )
+        attrs: dict[str, Any] = {
             k: v
             for k, v in storage.items()
             if any(x in k.lower() for x in ("capacity", "status", "health"))
         }
+        if diag:
+            attrs["healthy"] = diag.get("healthy", True)
+            attrs["total_capacity_gb"] = diag.get("total_gb", 0.0)
+            attrs["total_human"] = diag.get("total_human", "0 B")
+            attrs["preallocated_disk"] = diag.get("preallocated", False)
+        return attrs
 
 
 class DVRMonitorModeSensor(DVREntity, SensorEntity):
@@ -412,12 +421,18 @@ class DVRStorageStatusSensor(DVREntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Return storage partitions and diagnostic details."""
+        """Return storage partitions, capacity summary, and diagnostic details."""
         diag = (self.coordinator.data or {}).get("storage_diagnostics", {})
         return {
+            "healthy": diag.get("healthy", False),
+            "total_capacity_gb": diag.get("total_gb", 0.0),
+            "total_human": diag.get("total_human", "0 B"),
+            "usage_percent": diag.get("usage_percent", 0.0),
+            "preallocated_disk": diag.get("preallocated", False),
             "bad_disk_count": diag.get("bad_disk_count", 0),
             "has_bad_disk": diag.get("has_bad_disk", False),
             "filesystem_error": diag.get("filesystem_error", False),
+            "partition_errors": diag.get("partition_errors", []),
             "total_disks": diag.get("total_disks", 1),
             "partitions": diag.get("partitions", []),
         }
