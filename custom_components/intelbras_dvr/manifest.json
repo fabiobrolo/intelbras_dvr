@@ -1,6 +1,9 @@
 {
   "domain": "intelbras_dvr",
   "name": "Intelbras DVR",
+  "categories": [
+    "security_safety.cameras"
+  ],
   "codeowners": [
     "@fabiobrolo"
   ],
