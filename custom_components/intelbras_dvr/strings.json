@@ -479,7 +479,7 @@
       "message": "Cannot connect to Intelbras DVR at {host}."
     },
     "entry_not_found": {
-      "message": "No Intelbras DVR entry found with entry_id '{entry_id}'."
+      "message": "No Intelbras DVR entry found with entry_id {entry_id}."
     },
     "no_entries_configured": {
       "message": "No Intelbras DVR integration is currently loaded."
@@ -491,7 +491,7 @@
       "message": "Failed to set video color settings for channel {channel}."
     },
     "set_monitor_split_failed": {
-      "message": "Failed to set physical monitor split mode to '{mode}'."
+      "message": "Failed to set physical monitor split mode to {mode}."
     },
     "mask_camera_failed": {
       "message": "Failed to update privacy mask state on channel {channel}."
@@ -515,7 +515,7 @@
       "message": "The DVR did not accept the online upgrade command. Please update manually at {url}."
     },
     "invalid_light_compensation_mode": {
-      "message": "Invalid light compensation mode '{mode}'. Supported: {supported}."
+      "message": "Invalid light compensation mode {mode}. Supported: {supported}."
     },
     "light_compensation_mode_failed": {
       "message": "Failed to set light compensation mode on the DVR."
@@ -545,7 +545,7 @@
       "message": "Failed to update motion detection setting on channel {channel}."
     },
     "get_config_failed": {
-      "message": "Failed to read configuration table '{name}' from the DVR."
+      "message": "Failed to read configuration table {name} from the DVR."
     },
     "set_config_failed": {
       "message": "Failed to write configuration parameters to the DVR."
@@ -557,11 +557,11 @@
       "description": "Home Assistant received repeated authentication errors (HTTP 401/403) from the Intelbras DVR at {host}. The integration is cooling down between attempts to avoid DVR account lockout and will recover automatically once authentication succeeds.\n\nIf you changed the DVR password or user permissions, open the integration menu and select **Reconfigure** to update credentials immediately."
     },
     "insufficient_permissions": {
-      "title": "DVR user '{username}' is missing required permissions ({host})",
+      "title": "DVR user {username} is missing required permissions ({host})",
       "description": "The DVR user account **{username}** on `{host}` does not have all required permissions for full integration functionality.\n\n**Missing permissions:** `{missing_permissions}`\n\nPlease log in to the DVR web interface (**System > Account > Account**), enable all system and channel permissions for **{username}**, or select **Reconfigure** in Home Assistant to use an administrator account."
     },
     "user_not_sharable": {
-      "title": "DVR user '{username}' is not marked as reusable ({host})",
+      "title": "DVR user {username} is not marked as reusable ({host})",
       "description": "The DVR user account **{username}** on `{host}` has the **Reusable** (`Sharable`) option disabled. This can cause session conflicts or disconnections when multiple streams or clients connect simultaneously.\n\nPlease log in to the DVR web interface (**System > Account > Account**), edit user **{username}**, and enable the **Reusable** option."
     }
   },

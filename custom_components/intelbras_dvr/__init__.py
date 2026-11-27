@@ -58,6 +58,8 @@ from .views import DATA_PLAYBACK_ACTIVE_UNTIL, register_or_update_views
 
 _LOGGER = logging.getLogger(__name__)
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 
 # ---------------------------------------------------------------------------
 # Runtime data stored on the config entry
