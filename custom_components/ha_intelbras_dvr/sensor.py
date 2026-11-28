@@ -372,23 +372,6 @@ class DVRActiveUsersSensor(DVREntity, SensorEntity):
         users = (self.coordinator.data or {}).get("active_users", [])
         return len(users)
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Return details of connected user sessions."""
-        users = (self.coordinator.data or {}).get("active_users", [])
-        return {
-            "active_sessions": [
-                {
-                    "user": u.get("user"),
-                    "ip": u.get("ip"),
-                    "client_type": u.get("client_type"),
-                    "login_time": u.get("login_time"),
-                    "group": u.get("group"),
-                }
-                for u in users
-            ]
-        }
-
 
 class DVRStorageStatusSensor(DVREntity, SensorEntity):
     """Reports the overall health state of the DVR storage/disk controller."""

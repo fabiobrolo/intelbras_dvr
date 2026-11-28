@@ -1,7 +1,7 @@
 # Intelbras DVR for Home Assistant
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/fabiobrolo/intelbras_dvr/main/custom_components/intelbras_dvr/brand/logo.png" alt="Intelbras DVR" width="300"/>
+  <img src="https://raw.githubusercontent.com/fabiobrolo/ha_intelbras_dvr/main/custom_components/ha_intelbras_dvr/brand/logo.png" alt="Intelbras DVR" width="300"/>
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
@@ -71,7 +71,7 @@ Designed following modern Home Assistant Platinum-tier architectural standards (
 * **Storage & HDD Diagnostics:** S.A.R.T./hardware health detection (`binary_sensor.dvr_*_storage_failure`), partition health table attributes, total/free capacity, and an on-demand refresh button (`button.dvr_*_refresh_storage`).
 * **Network Interface Telemetry:** Link speed (Mbit/s), MAC address, and physical link connectivity binary sensor (`binary_sensor.dvr_*_network_link`).
 * **Official Home Assistant Diagnostics:** Integrated `diagnostics.py` supporting one-click JSON download under **Settings > Devices & Services > Intelbras DVR > 3 dots menu** (or per camera device) with automatic redaction of sensitive credentials and serial numbers.
-* **Audit & Event Log Service:** Custom service `intelbras_dvr.get_logs` querying structured logs directly into Home Assistant.
+* **Audit & Event Log Service:** Custom service `ha_intelbras_dvr.get_logs` querying structured logs directly into Home Assistant.
 
 ### 🖥️ Physical Monitor Output Management (HDMI/VGA)
 * **Dynamic Split Selection:** Dynamically queries `encode.cgi?action=getCaps` (`PreviewSplitNumList`) and `split.cgi` to generate split view options (`1x1`, `2x2`, `1+7`, `3x3`, `4x4`, `5x5`, `6x6`) matching your hardware.
@@ -215,13 +215,13 @@ Before adding the integration, it is **strongly recommended** to create a dedica
 1. Ensure [HACS](https://hacs.xyz/) is installed.
 2. Open **HACS** in Home Assistant.
 3. Click the three dots in the top right corner and choose **Custom repositories**.
-4. Enter URL: `https://github.com/fabiobrolo/intelbras_dvr`
+4. Enter URL: `https://github.com/fabiobrolo/ha_intelbras_dvr`
 5. Select category: **Integration**.
 6. Click **Add**, find **Intelbras DVR** in the list, and click **Download**.
 7. Restart Home Assistant.
 
 ### Manual Installation
-1. Copy the `custom_components/intelbras_dvr/` directory into your `/config/custom_components/` folder.
+1. Copy the `custom_components/ha_intelbras_dvr/` directory into your `/config/custom_components/` folder.
 2. Restart Home Assistant.
 
 ---
@@ -244,17 +244,17 @@ Before adding the integration, it is **strongly recommended** to create a dedica
 
 | Service | Description | Parameters |
 |---|---|---|
-| `intelbras_dvr.set_video_color` | Adjust picture settings on a camera channel | `channel` (`1`–`32`), `brightness`, `contrast`, `hue`, `saturation`, `acutance` (`0`–`100`), `profile` (`0`=Day, `1`=Night, `2`=Normal) |
-| `intelbras_dvr.mask_camera` | Black out or restore camera video feed | `channel` (`1`–`32`), `action` (`mask` / `unmask`) |
-| `intelbras_dvr.set_monitor_split` | Change HDMI/VGA physical monitor split mode | `mode` (`split1`, `split4`, `split8`, `split9`, `split16`, etc.), `group`, `channel` |
-| `intelbras_dvr.record_camera` | Switch camera to manual recording for a duration | `channel` (`1`–`32`), `duration` (`5`–`3600` seconds) |
-| `intelbras_dvr.ptz_move` | Move PTZ camera in a direction with timed stop | `channel` (`1`–`32`), `direction`, `speed` (`1`–`8`), `duration` (`0.1`–`10.0`s) |
-| `intelbras_dvr.ptz_stop` | Stop ongoing PTZ movement | `channel` (`1`–`32`), `direction` |
-| `intelbras_dvr.ptz_preset` | Move PTZ camera to a saved preset | `channel` (`1`–`32`), `preset` (`1`–`255`) |
-| `intelbras_dvr.get_logs` | Query structured audit and system event logs (including parsed `detail_fields`) | `count` (`1`–`100`), `log_type`, `start_time`, `end_time` |
-| `intelbras_dvr.get_config` | Read any DVR `configManager` table by name (returns response data) | `name` (e.g. `MotionDetect`, `Encode`, `NTP`) |
-| `intelbras_dvr.set_config` | Write one or more DVR `configManager` parameters directly | `params` (key/value map; empty strings automatically clear fields) |
-| `intelbras_dvr.reboot` | Reboot the DVR hardware | `entry_id` (optional) |
+| `ha_intelbras_dvr.set_video_color` | Adjust picture settings on a camera channel | `channel` (`1`–`32`), `brightness`, `contrast`, `hue`, `saturation`, `acutance` (`0`–`100`), `profile` (`0`=Day, `1`=Night, `2`=Normal) |
+| `ha_intelbras_dvr.mask_camera` | Black out or restore camera video feed | `channel` (`1`–`32`), `action` (`mask` / `unmask`) |
+| `ha_intelbras_dvr.set_monitor_split` | Change HDMI/VGA physical monitor split mode | `mode` (`split1`, `split4`, `split8`, `split9`, `split16`, etc.), `group`, `channel` |
+| `ha_intelbras_dvr.record_camera` | Switch camera to manual recording for a duration | `channel` (`1`–`32`), `duration` (`5`–`3600` seconds) |
+| `ha_intelbras_dvr.ptz_move` | Move PTZ camera in a direction with timed stop | `channel` (`1`–`32`), `direction`, `speed` (`1`–`8`), `duration` (`0.1`–`10.0`s) |
+| `ha_intelbras_dvr.ptz_stop` | Stop ongoing PTZ movement | `channel` (`1`–`32`), `direction` |
+| `ha_intelbras_dvr.ptz_preset` | Move PTZ camera to a saved preset | `channel` (`1`–`32`), `preset` (`1`–`255`) |
+| `ha_intelbras_dvr.get_logs` | Query structured audit and system event logs (admin-only; includes parsed `detail_fields`) | `count` (`1`–`100`), `log_type`, `start_time`, `end_time` |
+| `ha_intelbras_dvr.get_config` | Read any DVR `configManager` table by name (admin-only; returns response data) | `name` (e.g. `MotionDetect`, `Encode`, `NTP`) |
+| `ha_intelbras_dvr.set_config` | Write one or more DVR `configManager` parameters directly (admin-only) | `params` (key/value map; empty strings automatically clear fields) |
+| `ha_intelbras_dvr.reboot` | Reboot the DVR hardware | `entry_id` (optional) |
 
 > 💾 **Note on Disk Usage (`100%`):** Intelbras/Dahua DVRs pre-allocate 100% of disk space on format for circular recording. Seeing `100.0%` on `sensor.*_disk_usage` is normal — check the `healthy` and `preallocated_disk` attributes on the Storage Status and Disk Usage sensors to verify drive health.
 
@@ -276,7 +276,7 @@ folders:
   - id: dvr_recordings
     type: ha
     ha:
-      url: /media-browser/browser/app%2Cmedia-source%3A%2F%2Fintelbras_dvr%2FALLFILES%7C<ENTRY_ID>%7C<CH>%7C<YYYYMMDD>
+      url: /media-browser/browser/app%2Cmedia-source%3A%2F%2Fha_intelbras_dvr%2FALLFILES%7C<ENTRY_ID>%7C<CH>%7C<YYYYMMDD>
       path:
         - matchers:
             - type: title

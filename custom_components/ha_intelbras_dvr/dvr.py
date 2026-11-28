@@ -3393,25 +3393,6 @@ class IntelbrasClient:
         resp = await self._get(f"{MAGICBOX_CGI}?action=reboot")
         return resp.status_code == 200 and "OK" in resp.text
 
-    async def async_disable_auto_logout(self) -> bool:
-        """Disable AutoLogout on the DVR (V3.35 GUISet[0].AutoLogout and General.AutoLogout)."""
-        ok = False
-        for param_key in ("GUISet[0].AutoLogout", "General.AutoLogout"):
-            try:
-                resp = await self._get(
-                    CONFIG_MANAGER_CGI,
-                    params={
-                        "action": "setConfig",
-                        param_key: 0,
-                    },
-                    timeout=4.0,
-                )
-                if resp.status_code == 200 and "OK" in resp.text:
-                    ok = True
-            except Exception as exc:  # noqa: BLE001
-                _LOGGER.debug("AutoLogout setting %s skipped: %s", param_key, exc)
-        return ok
-
     # ------------------------------------------------------------------
     # Events & Alarms
     # ------------------------------------------------------------------

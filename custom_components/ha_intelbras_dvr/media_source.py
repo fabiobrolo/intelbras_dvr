@@ -10,6 +10,7 @@ import urllib.parse
 import aiohttp
 
 from homeassistant.components.camera import DynamicStreamSettings
+from homeassistant.components.http.auth import async_sign_path
 from homeassistant.components.media_player import MediaClass, MediaType
 from homeassistant.components.media_source import (
     BrowseMediaSource,
@@ -279,12 +280,13 @@ class IntelbrasMediaSource(MediaSource):
             entry_id, client, ch1, raw_dvr_url
         )
 
+        safe_url = url.split("@")[-1] if "@" in url else url
         _LOGGER.info(
             "Starting Intelbras DVR playback stream for channel %s (%s to %s) via %s",
             channel,
             start_s,
             end_s,
-            url,
+            safe_url,
         )
 
         try:
@@ -298,7 +300,9 @@ class IntelbrasMediaSource(MediaSource):
         except Exception as ex:
             clear_playback_active(self.hass)
             await self._cleanup_go2rtc_playback(go2rtc_stream_name)
-            _LOGGER.error("Failed to create playback stream for %s: %s", url, ex)
+            _LOGGER.error(
+                "Failed to create playback stream for %s: %s", safe_url, ex
+            )
             raise Unresolvable(f"DVR stream error: {ex}") from ex
 
         domain_data[DATA_ACTIVE_PLAYBACK_STREAM] = stream
@@ -369,9 +373,13 @@ class IntelbrasMediaSource(MediaSource):
             ],
         )
 
+    def _sign_url(self, path: str) -> str:
+        """Sign an authenticated thumbnail view path for media browser clients."""
+        return async_sign_path(self.hass, path, timedelta(hours=1))
+
     def _channel_thumbnail(self, entry: ConfigEntry, ch: int) -> str:
-        """Return optimal preview thumbnail URL for channel."""
-        return f"/api/intelbras_dvr/thumbnail/{entry.entry_id}/{ch}"
+        """Return signed preview thumbnail URL for channel."""
+        return self._sign_url(f"/api/{DOMAIN}/thumbnail/{entry.entry_id}/{ch}")
 
     def _browse_channels(self, identifier: str) -> BrowseMediaSource:
         _, entry_id = identifier.split("|")
@@ -477,7 +485,9 @@ class IntelbrasMediaSource(MediaSource):
                 media_class=MediaClass.DIRECTORY,
                 media_content_type="",
                 title=day.strftime("%d/%m/%Y"),
-                thumbnail=f"/api/intelbras_dvr/day_thumb/{entry_id}/{channel}/{day.strftime(_DAY_FMT)}",
+                thumbnail=self._sign_url(
+                    f"/api/{DOMAIN}/day_thumb/{entry_id}/{channel}/{day.strftime(_DAY_FMT)}"
+                ),
                 can_play=False,
                 can_expand=True,
                 children_media_class=MediaClass.DIRECTORY,
@@ -539,7 +549,9 @@ class IntelbrasMediaSource(MediaSource):
             actual_first_start = max(first_rec.start, day_start)
             start_c = actual_first_start.strftime(_COMPACT_FMT)
             end_c = (actual_first_start + step).strftime(_COMPACT_FMT)
-            all_day_thumb = f"/api/intelbras_dvr/recording_thumb/{entry_id}/{channel}/{start_c}/{end_c}?v=3"
+            all_day_thumb = self._sign_url(
+                f"/api/{DOMAIN}/recording_thumb/{entry_id}/{channel}/{start_c}/{end_c}"
+            )
             items_to_cache.append((entry_id, ch_idx, start_c, end_c))
             default_all_tpl = (
                 "📅 {date} – Ver Tudo (Linha do Tempo)"
@@ -582,7 +594,9 @@ class IntelbrasMediaSource(MediaSource):
                     )
                     st_c = actual_start.strftime(_COMPACT_FMT)
                     et_c = slot_end.strftime(_COMPACT_FMT)
-                    hour_thumb = f"/api/intelbras_dvr/recording_thumb/{entry_id}/{channel}/{st_c}/{et_c}?v=3"
+                    hour_thumb = self._sign_url(
+                        f"/api/{DOMAIN}/recording_thumb/{entry_id}/{channel}/{st_c}/{et_c}"
+                    )
                     if (entry_id, ch_idx, st_c, et_c) not in items_to_cache:
                         items_to_cache.append((entry_id, ch_idx, st_c, et_c))
                     break
@@ -610,7 +624,9 @@ class IntelbrasMediaSource(MediaSource):
             media_class=MediaClass.DIRECTORY,
             media_content_type="",
             title=day.strftime("%d/%m/%Y"),
-            thumbnail=f"/api/intelbras_dvr/day_thumb/{entry_id}/{channel}/{day_s}",
+            thumbnail=self._sign_url(
+                f"/api/{DOMAIN}/day_thumb/{entry_id}/{channel}/{day_s}"
+            ),
             can_play=False,
             can_expand=True,
             children_media_class=MediaClass.DIRECTORY,
@@ -645,7 +661,9 @@ class IntelbrasMediaSource(MediaSource):
                 )
                 start_compact = actual_start.strftime(_COMPACT_FMT)
                 end_compact = slot_end.strftime(_COMPACT_FMT)
-                thumb_url = f"/api/intelbras_dvr/recording_thumb/{entry_id}/{channel}/{start_compact}/{end_compact}?v=3"
+                thumb_url = self._sign_url(
+                    f"/api/{DOMAIN}/recording_thumb/{entry_id}/{channel}/{start_compact}/{end_compact}"
+                )
                 items_to_cache.append(
                     (entry_id, ch_idx, start_compact, end_compact)
                 )
@@ -712,7 +730,9 @@ class IntelbrasMediaSource(MediaSource):
                 )
                 start_compact = actual_start.strftime(_COMPACT_FMT)
                 end_compact = slot_end.strftime(_COMPACT_FMT)
-                thumb_url = f"/api/intelbras_dvr/recording_thumb/{entry_id}/{channel}/{start_compact}/{end_compact}?v=3"
+                thumb_url = self._sign_url(
+                    f"/api/{DOMAIN}/recording_thumb/{entry_id}/{channel}/{start_compact}/{end_compact}"
+                )
                 items_to_cache.append(
                     (entry_id, ch_idx, start_compact, end_compact)
                 )
@@ -745,7 +765,9 @@ class IntelbrasMediaSource(MediaSource):
             media_class=MediaClass.DIRECTORY,
             media_content_type="",
             title=f"{ch_name} – {day.strftime('%d/%m/%Y')} ({timeline_label})",
-            thumbnail=f"/api/intelbras_dvr/day_thumb/{entry_id}/{channel}/{day_s}",
+            thumbnail=self._sign_url(
+                f"/api/{DOMAIN}/day_thumb/{entry_id}/{channel}/{day_s}"
+            ),
             can_play=False,
             can_expand=True,
             children_media_class=MediaClass.VIDEO,

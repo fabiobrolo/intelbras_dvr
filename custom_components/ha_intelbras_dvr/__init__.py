@@ -28,6 +28,7 @@ from homeassistant.helpers import (
     entity_registry as er,
     translation,
 )
+from homeassistant.helpers.service import async_register_admin_service
 
 from .const import (
     CONF_CHANNELS,
@@ -378,7 +379,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
         record_tasks[task_key] = hass.async_create_background_task(
             _restore_schedule(),
-            name=f"intelbras_dvr_record_ch{channel}",
+            name=f"ha_intelbras_dvr_record_ch{channel}",
         )
 
     async def handle_ptz_move(call: ServiceCall) -> None:
@@ -408,7 +409,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
         ptz_tasks[task_key] = hass.async_create_background_task(
             _auto_stop(),
-            name=f"intelbras_dvr_ptz_stop_ch{channel}",
+            name=f"ha_intelbras_dvr_ptz_stop_ch{channel}",
         )
 
     async def handle_ptz_stop(call: ServiceCall) -> None:
@@ -503,18 +504,26 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         ("ptz_move", handle_ptz_move, PTZ_MOVE_SCHEMA),
         ("ptz_stop", handle_ptz_stop, PTZ_STOP_SCHEMA),
         ("ptz_preset", handle_ptz_preset, PTZ_PRESET_SCHEMA),
-        ("set_config", handle_set_config, SET_CONFIG_SCHEMA),
     ]:
         hass.services.async_register(DOMAIN, name, handler, schema=schema)
 
-    hass.services.async_register(
+    async_register_admin_service(
+        hass,
+        DOMAIN,
+        "set_config",
+        handle_set_config,
+        schema=SET_CONFIG_SCHEMA,
+    )
+    async_register_admin_service(
+        hass,
         DOMAIN,
         "get_logs",
         handle_get_logs,
         schema=GET_LOGS_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
-    hass.services.async_register(
+    async_register_admin_service(
+        hass,
         DOMAIN,
         "get_config",
         handle_get_config,
@@ -579,11 +588,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: IntelbrasDVRConfigEntry)
             translation_key="cannot_connect",
             translation_placeholders={"host": str(entry.data[CONF_HOST])},
         ) from exc
-
-    try:
-        await client.async_disable_auto_logout()
-    except Exception as exc:  # noqa: BLE001
-        _LOGGER.debug("Failed to disable AutoLogout on DVR: %s", exc)
 
     try:
         await event_coordinator.async_refresh()

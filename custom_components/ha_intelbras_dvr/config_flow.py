@@ -27,6 +27,9 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
 )
 
 from .const import (
@@ -55,6 +58,10 @@ from .dvr import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_PASSWORD_SELECTOR = TextSelector(
+    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+)
 
 
 class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -199,7 +206,7 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                 {
                     vol.Required(CONF_HOST, default=self._host): host_field,
                     vol.Required(CONF_USERNAME, default=self._username): str,
-                    vol.Required(CONF_PASSWORD): str,
+                    vol.Required(CONF_PASSWORD): _PASSWORD_SELECTOR,
                     vol.Optional(CONF_HTTP_PORT, default=self._http_port): int,
                     vol.Optional(CONF_RTSP_PORT, default=self._rtsp_port): int,
                 }
@@ -397,7 +404,7 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_USERNAME, default=entry.data.get(CONF_USERNAME, "")
                     ): str,
-                    vol.Required(CONF_PASSWORD): str,
+                    vol.Required(CONF_PASSWORD): _PASSWORD_SELECTOR,
                 }
             ),
             description_placeholders={"host": str(entry.data.get(CONF_HOST, ""))},
@@ -473,9 +480,7 @@ class IntelbrasDVRConfigFlow(ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_USERNAME, default=entry.data.get(CONF_USERNAME, "")
                     ): str,
-                    vol.Required(
-                        CONF_PASSWORD, default=entry.data.get(CONF_PASSWORD, "")
-                    ): str,
+                    vol.Required(CONF_PASSWORD): _PASSWORD_SELECTOR,
                     vol.Optional(
                         CONF_HTTP_PORT,
                         default=entry.data.get(CONF_HTTP_PORT, DEFAULT_HTTP_PORT),

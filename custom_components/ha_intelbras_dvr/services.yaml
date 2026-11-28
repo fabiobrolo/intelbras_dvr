@@ -8,7 +8,7 @@ set_video_color:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -82,7 +82,7 @@ set_monitor_split:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     mode:
       name: Split Mode
       description: "Display mode: split1, split4, split8, split9, split16, split25, split36."
@@ -127,7 +127,7 @@ mask_camera:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -157,7 +157,7 @@ reboot:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
 
 record_camera:
   name: Record Camera
@@ -169,7 +169,7 @@ record_camera:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -199,7 +199,7 @@ ptz_move:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -261,7 +261,7 @@ ptz_stop:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -303,7 +303,7 @@ ptz_preset:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     channel:
       name: Channel
       description: Camera channel index (0-based).
@@ -331,7 +331,7 @@ get_logs:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     log_type:
       name: Log Type
       description: Category of logs to search (all, system, config, storage, alarm, record, account, clear).
@@ -381,7 +381,7 @@ get_config:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     name:
       name: Table Name
       description: Name of the configManager table to read (e.g. MotionDetect, Encode, RecordMode, NTP).
@@ -400,7 +400,7 @@ set_config:
       required: false
       selector:
         config_entry:
-          integration: intelbras_dvr
+          integration: ha_intelbras_dvr
     params:
       name: Parameters
       description: Key/value mapping of configManager parameters to write (without leading 'table.' prefix).

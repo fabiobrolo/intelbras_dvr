@@ -200,7 +200,7 @@ class MonitorSplitSelect(DVREntity, SelectEntity):
         """Return localized templates (single_view, range_view, full_view)."""
         runtime = getattr(self._entry, "runtime_data", None)
         trans: dict[str, str] = getattr(runtime, "translations", {}) if runtime else {}
-        prefix = "component.intelbras_dvr.selector.monitor_view_format.options."
+        prefix = f"component.{DOMAIN}.selector.monitor_view_format.options."
         single_tpl = trans.get(f"{prefix}single_view", "View 1: {name}")
         range_tpl = trans.get(f"{prefix}range_view", "View {count}: {start}-{end}")
         full_tpl = trans.get(f"{prefix}full_view", "View {count}")

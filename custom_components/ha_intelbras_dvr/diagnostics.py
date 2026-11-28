@@ -27,6 +27,8 @@ TO_REDACT = {
     "configuration_url",
     "password",
     "username",
+    "user",
+    "session_id",
     "serialNumber",
     "serial_number",
     "mac",

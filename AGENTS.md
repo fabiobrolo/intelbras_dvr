@@ -1,15 +1,15 @@
 # Intelbras DVR Integration — Project Rules
 
-These guardrails are mandatory for every change in the `intelbras_dvr` repository.
+These guardrails are mandatory for every change in the `ha_intelbras_dvr` repository.
 
 ## 1. 100% Localization & Language Discipline
 - **Code in English:** 100% of `.py` source code, identifiers, comments, docstrings, and log messages must be written in English.
 - **100% Localizable UI:** Every entity name, state, selector option, config/options flow text, Repairs issue, service field, and `HomeAssistantError` / `ServiceValidationError` must use `translation_key` (never hardcoded user-facing strings).
 - **4-File Translation Parity:** Always keep **100% key parity** across:
-  - `custom_components/intelbras_dvr/strings.json`
-  - `custom_components/intelbras_dvr/translations/en.json`
-  - `custom_components/intelbras_dvr/translations/pt.json`
-  - `custom_components/intelbras_dvr/translations/pt-BR.json`
+  - `custom_components/ha_intelbras_dvr/strings.json`
+  - `custom_components/ha_intelbras_dvr/translations/en.json`
+  - `custom_components/ha_intelbras_dvr/translations/pt.json`
+  - `custom_components/ha_intelbras_dvr/translations/pt-BR.json`
 
 ## 2. Home Assistant Modern Best Practices (HA 2024.4+ / 2026.x)
 - **DVR/NVR Hub Architecture:** Keep `manifest.json` as `"integration_type": "hub"`. This integration targets Intelbras/Dahua **DVRs and NVRs** (parent recorder + child channel devices via `via_device_id`), not standalone single IP cameras.
@@ -21,7 +21,7 @@ These guardrails are mandatory for every change in the `intelbras_dvr` repositor
 - LAN auto-discovery (`DHDiscover` UDP `37810`) must suggest only **unconfigured DVR/NVR hubs**, filtering out standalone IP cameras (`IPC`) and already-configured recorders.
 
 ## 4. Diagnostics Always Up to Date
-- Whenever a new feature, coordinator field, client cache, or event state is added, update `custom_components/intelbras_dvr/diagnostics.py` so the debug JSON required by GitHub issue templates always covers 100% of active features.
+- Whenever a new feature, coordinator field, client cache, or event state is added, update `custom_components/ha_intelbras_dvr/diagnostics.py` so the debug JSON required by GitHub issue templates always covers 100% of active features.
 - Keep all sensitive fields (`username`, `password`, `host`, `ip`, `ip_address`, `configuration_url`, `serialNumber`, `serial_number`, `mac`, `mac_address`, `unique_id`) redacted in `TO_REDACT`.
 
 ## 5. Documentation Parity (READMEs)

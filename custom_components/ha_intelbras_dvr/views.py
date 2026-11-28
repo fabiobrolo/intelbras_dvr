@@ -194,9 +194,8 @@ def _write_disk_cache(file_path: str, data: bytes) -> None:
 class IntelbrasThumbnailView(HomeAssistantView):
     """View to serve live camera thumbnail snapshots for the media browser."""
 
-    url = "/api/intelbras_dvr/thumbnail/{entry_id}/{channel}"
-    name = "api:intelbras_dvr:thumbnail"
-    requires_auth = False
+    url = "/api/ha_intelbras_dvr/thumbnail/{entry_id}/{channel}"
+    name = "api:ha_intelbras_dvr:thumbnail"
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialise the live thumbnail view."""
@@ -216,16 +215,15 @@ class IntelbrasThumbnailView(HomeAssistantView):
 class IntelbrasRecordingThumbnailView(HomeAssistantView):
     """View to serve recording snapshot thumbnails extracted via ffmpeg or cached."""
 
-    url = "/api/intelbras_dvr/recording_thumb/{entry_id}/{channel}/{start}/{end}"
-    name = "api:intelbras_dvr:recording_thumb"
-    requires_auth = False
+    url = "/api/ha_intelbras_dvr/recording_thumb/{entry_id}/{channel}/{start}/{end}"
+    name = "api:ha_intelbras_dvr:recording_thumb"
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialise the recording thumbnail view."""
         self.hass = hass
         self._cache: dict[tuple[str, int, str], bytes] = {}
         self._sem = asyncio.Semaphore(1)
-        self.cache_dir = hass.config.path(".storage", "intelbras_dvr_thumbnails")
+        self.cache_dir = hass.config.path(".storage", "ha_intelbras_dvr_thumbnails")
         self._check_and_purge_legacy_cache()
 
     def _check_and_purge_legacy_cache(self) -> None:
@@ -285,15 +283,14 @@ class IntelbrasRecordingThumbnailView(HomeAssistantView):
 class IntelbrasDayThumbnailView(HomeAssistantView):
     """View to serve preview thumbnails for a whole day."""
 
-    url = "/api/intelbras_dvr/day_thumb/{entry_id}/{channel}/{day_s}"
-    name = "api:intelbras_dvr:day_thumb"
-    requires_auth = False
+    url = "/api/ha_intelbras_dvr/day_thumb/{entry_id}/{channel}/{day_s}"
+    name = "api:ha_intelbras_dvr:day_thumb"
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialise the day thumbnail view."""
         self.hass = hass
         self._cache: dict[tuple[str, int, str], bytes] = {}
-        self.cache_dir = hass.config.path(".storage", "intelbras_dvr_thumbnails")
+        self.cache_dir = hass.config.path(".storage", "ha_intelbras_dvr_thumbnails")
 
     async def get(
         self, request: web.Request, entry_id: str, channel: str, day_s: str
@@ -313,8 +310,8 @@ class IntelbrasDayThumbnailView(HomeAssistantView):
 class IntelbrasBrandIconView(HomeAssistantView):
     """View to serve local brand icons without auth for HACS and UI consumers."""
 
-    url = "/api/intelbras_dvr/brand/{image}"
-    name = "api:intelbras_dvr:brand"
+    url = "/api/ha_intelbras_dvr/brand/{image}"
+    name = "api:ha_intelbras_dvr:brand"
     requires_auth = False
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -322,6 +319,22 @@ class IntelbrasBrandIconView(HomeAssistantView):
         self.hass = hass
         self._brand_dir = os.path.join(os.path.dirname(__file__), "brand")
         self._root_dir = os.path.dirname(__file__)
+
+    def _read_brand_image(self, image: str) -> bytes | None:
+        """Resolve and read a brand image from disk inside the executor."""
+        candidates = [os.path.join(self._brand_dir, image)]
+        if image.startswith("dark_"):
+            candidates.append(
+                os.path.join(self._brand_dir, image.removeprefix("dark_"))
+            )
+        candidates.append(
+            os.path.join(self._root_dir, image.removeprefix("dark_"))
+        )
+        for path in candidates:
+            data = _read_disk_cache(path)
+            if data:
+                return data
+        return None
 
     async def get(self, request: web.Request, image: str) -> web.StreamResponse:
         """Serve the requested brand image."""
@@ -338,29 +351,26 @@ class IntelbrasBrandIconView(HomeAssistantView):
         if image not in allowed:
             return web.Response(status=HTTPStatus.NOT_FOUND, text="Not found")
 
-        file_path = os.path.join(self._brand_dir, image)
-        if not os.path.isfile(file_path) and image.startswith("dark_"):
-            file_path = os.path.join(self._brand_dir, image.removeprefix("dark_"))
-        if not os.path.isfile(file_path):
-            file_path = os.path.join(self._root_dir, image.removeprefix("dark_"))
-        data = await self.hass.async_add_executor_job(_read_disk_cache, file_path)
+        data = await self.hass.async_add_executor_job(
+            self._read_brand_image, image
+        )
         if not data:
             return web.Response(status=HTTPStatus.NOT_FOUND, text="Not found")
 
         return web.Response(
             body=data,
             content_type="image/png",
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "private, max-age=86400"},
         )
 
 
 def register_or_update_views(hass: HomeAssistant) -> None:
     """Register Intelbras DVR HTTP views once per Home Assistant runtime."""
     view_specs: list[tuple[str, type[HomeAssistantView]]] = [
-        ("intelbras_dvr_thumbnail_view", IntelbrasThumbnailView),
-        ("intelbras_dvr_recording_thumbnail_view", IntelbrasRecordingThumbnailView),
-        ("intelbras_dvr_day_thumbnail_view", IntelbrasDayThumbnailView),
-        ("intelbras_dvr_brand_icon_view", IntelbrasBrandIconView),
+        ("ha_intelbras_dvr_thumbnail_view", IntelbrasThumbnailView),
+        ("ha_intelbras_dvr_recording_thumbnail_view", IntelbrasRecordingThumbnailView),
+        ("ha_intelbras_dvr_day_thumbnail_view", IntelbrasDayThumbnailView),
+        ("ha_intelbras_dvr_brand_icon_view", IntelbrasBrandIconView),
     ]
 
     if getattr(hass, "http", None) is None:
@@ -415,7 +425,7 @@ async def async_handle_thumbnail(
         return web.Response(
             body=cached["data"],
             content_type="image/jpeg",
-            headers={"Cache-Control": f"public, max-age={int(CACHE_TTL)}"},
+            headers={"Cache-Control": f"private, max-age={int(CACHE_TTL)}"},
         )
 
     client: IntelbrasClient = entry.runtime_data.client
@@ -427,7 +437,7 @@ async def async_handle_thumbnail(
             return web.Response(
                 body=cached["data"],
                 content_type="image/jpeg",
-                headers={"Cache-Control": f"public, max-age={int(CACHE_TTL)}"},
+                headers={"Cache-Control": f"private, max-age={int(CACHE_TTL)}"},
             )
 
         channel_names = entry.data.get("channel_names", {})
@@ -490,7 +500,7 @@ async def async_handle_thumbnail(
             return web.Response(
                 body=data,
                 content_type="image/jpeg",
-                headers={"Cache-Control": f"public, max-age={int(CACHE_TTL)}"},
+                headers={"Cache-Control": f"private, max-age={int(CACHE_TTL)}"},
             )
 
         if cached:
@@ -739,18 +749,18 @@ def start_scope_cache(
     if old_task and not old_task.done():
         old_task.cancel()
 
-    view = hass.data.get("intelbras_dvr_recording_thumbnail_view")
+    view = hass.data.get("ha_intelbras_dvr_recording_thumbnail_view")
     sem = getattr(view, "_sem", None) or asyncio.Semaphore(1)
     mem_cache = getattr(view, "_cache", None)
     cache_dir = getattr(
         view,
         "cache_dir",
-        hass.config.path(".storage", "intelbras_dvr_thumbnails"),
+        hass.config.path(".storage", "ha_intelbras_dvr_thumbnails"),
     )
 
     task = hass.async_create_background_task(
         _scope_cache_loop(hass, scope_id, items, cache_dir, sem, mem_cache),
-        name=f"intelbras_dvr_scope_cache_{scope_id}",
+        name=f"ha_intelbras_dvr_scope_cache_{scope_id}",
     )
     domain_data[DATA_SCOPE_CACHE_TASK] = task
 
@@ -800,7 +810,7 @@ async def async_handle_recording_thumbnail(
         return web.Response(
             body=cached,
             content_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "private, max-age=86400"},
         )
 
     cache_file = os.path.join(cache_dir, f"{entry_id}_{ch_idx}_{start_s}.jpg")
@@ -810,7 +820,7 @@ async def async_handle_recording_thumbnail(
         return web.Response(
             body=disk_data,
             content_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "private, max-age=86400"},
         )
 
     if is_playback_active(hass):
@@ -877,7 +887,7 @@ async def async_handle_recording_thumbnail(
                 return web.Response(
                     body=cached,
                     content_type="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=86400"},
+                    headers={"Cache-Control": "private, max-age=86400"},
                 )
 
             disk_data = await hass.async_add_executor_job(
@@ -888,7 +898,7 @@ async def async_handle_recording_thumbnail(
                 return web.Response(
                     body=disk_data,
                     content_type="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=86400"},
+                    headers={"Cache-Control": "private, max-age=86400"},
                 )
 
             data = await _async_extract_recording_frame(
@@ -904,7 +914,7 @@ async def async_handle_recording_thumbnail(
                 return web.Response(
                     body=data,
                     content_type="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=86400"},
+                    headers={"Cache-Control": "private, max-age=86400"},
                 )
     except (asyncio.CancelledError, ConnectionResetError):
         pass
@@ -952,7 +962,7 @@ async def async_handle_day_thumbnail(
 
     today = dt_util.now().date()
     if day_dt == today:
-        thumb_view = hass.data.get("intelbras_dvr_thumbnail_view")
+        thumb_view = hass.data.get("ha_intelbras_dvr_thumbnail_view")
         if thumb_view:
             return await async_handle_thumbnail(
                 hass, entry_id, channel, thumb_view._cache, thumb_view._sem
@@ -964,7 +974,7 @@ async def async_handle_day_thumbnail(
         return web.Response(
             body=cached,
             content_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "private, max-age=86400"},
         )
 
     cache_file = os.path.join(cache_dir, f"{entry_id}_{ch_idx}_{day_s}_day.jpg")
@@ -974,7 +984,7 @@ async def async_handle_day_thumbnail(
         return web.Response(
             body=disk_data,
             content_type="image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
+            headers={"Cache-Control": "private, max-age=86400"},
         )
 
     if is_playback_active(hass):
@@ -996,7 +1006,7 @@ async def async_handle_day_thumbnail(
     start_search = datetime.combine(day_dt, time.min)
     end_search = datetime.combine(day_dt, time.max.replace(microsecond=0))
 
-    rec_view = hass.data.get("intelbras_dvr_recording_thumbnail_view")
+    rec_view = hass.data.get("ha_intelbras_dvr_recording_thumbnail_view")
     sem = getattr(rec_view, "_sem", None) or asyncio.Semaphore(1)
 
     data_dom[DATA_ACTIVE_HTTP_WAITERS] = (
@@ -1029,7 +1039,7 @@ async def async_handle_day_thumbnail(
                 return web.Response(
                     body=cached,
                     content_type="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=86400"},
+                    headers={"Cache-Control": "private, max-age=86400"},
                 )
 
             disk_data = await hass.async_add_executor_job(
@@ -1040,7 +1050,7 @@ async def async_handle_day_thumbnail(
                 return web.Response(
                     body=disk_data,
                     content_type="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=86400"},
+                    headers={"Cache-Control": "private, max-age=86400"},
                 )
 
             try:
@@ -1090,7 +1100,7 @@ async def async_handle_day_thumbnail(
                     return web.Response(
                         body=data,
                         content_type="image/jpeg",
-                        headers={"Cache-Control": "public, max-age=86400"},
+                        headers={"Cache-Control": "private, max-age=86400"},
                     )
     except (asyncio.CancelledError, ConnectionResetError):
         pass

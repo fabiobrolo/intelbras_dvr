@@ -113,7 +113,7 @@ class PTZDirectionButton(CameraChannelEntity, ButtonEntity):
         if self.hass:
             self._stop_task = self.hass.async_create_background_task(
                 _delayed_stop(),
-                name=f"intelbras_dvr_ptz_btn_ch{self._channel}_{code}",
+                name=f"ha_intelbras_dvr_ptz_btn_ch{self._channel}_{code}",
             )
         else:
             self._stop_task = asyncio.create_task(_delayed_stop())

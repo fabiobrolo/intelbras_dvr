@@ -1,7 +1,7 @@
 # Integração Intelbras DVR para Home Assistant
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/fabiobrolo/intelbras_dvr/main/custom_components/intelbras_dvr/brand/logo.png" alt="Intelbras DVR" width="300"/>
+  <img src="https://raw.githubusercontent.com/fabiobrolo/ha_intelbras_dvr/main/custom_components/ha_intelbras_dvr/brand/logo.png" alt="Intelbras DVR" width="300"/>
 </p>
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/default)
@@ -71,7 +71,7 @@ Desenvolvida seguindo os padrões arquiteturais modernos do Home Assistant (HA 2
 * **Diagnóstico de Armazenamento e HD:** Detecção de falhas de hardware/S.A.R.T. (`binary_sensor.dvr_*_storage_failure`), atributos com tabela de saúde das partições, capacidade total/livre e botão de atualização sob demanda (`button.dvr_*_refresh_storage`).
 * **Telemetria de Rede:** Velocidade do link (Mbit/s), endereço MAC e sensor binário de integridade do cabo de rede (`binary_sensor.dvr_*_network_link`).
 * **Diagnóstico Oficial do Home Assistant:** Suporte nativo a `diagnostics.py` permitindo baixar o relatório JSON com um clique em **Configurações > Dispositivos e Serviços > Intelbras DVR > menu de 3 pontos** (ou no dispositivo da câmera), com ofuscação automática de senhas e dados sensíveis.
-* **Serviço de Consulta de Logs:** Serviço customizado `intelbras_dvr.get_logs` para consultar registros estruturados de auditoria e eventos diretamente no Home Assistant.
+* **Serviço de Consulta de Logs:** Serviço customizado `ha_intelbras_dvr.get_logs` para consultar registros estruturados de auditoria e eventos diretamente no Home Assistant.
 
 ### 🖥️ Gerenciamento da Saída Física de Monitor (HDMI/VGA)
 * **Seleção Dinâmica de Mosaico (Split):** Consulta em tempo real via `encode.cgi?action=getCaps` (`PreviewSplitNumList`) e `split.cgi` para gerar opções de mosaico (`1x1`, `2x2`, `1+7`, `3x3`, `4x4`, `5x5`, `6x6`) correspondentes ao hardware conectado.
@@ -215,13 +215,13 @@ Antes de adicionar a integração, é **fortemente recomendado** criar uma conta
 1. Certifique-se de ter o [HACS](https://hacs.xyz/) instalado.
 2. Abra o **HACS** no Home Assistant.
 3. Clique nos três pontos no canto superior direito e escolha **Repositórios personalizados**.
-4. Insira a URL: `https://github.com/fabiobrolo/intelbras_dvr`
+4. Insira a URL: `https://github.com/fabiobrolo/ha_intelbras_dvr`
 5. Selecione a categoria: **Integração**.
 6. Clique em **Adicionar**, localize **Intelbras DVR** na listagem e clique em **Baixar**.
 7. Reinicie o Home Assistant.
 
 ### Instalação Manual
-1. Copie o diretório `custom_components/intelbras_dvr/` para a sua pasta `/config/custom_components/`.
+1. Copie o diretório `custom_components/ha_intelbras_dvr/` para a sua pasta `/config/custom_components/`.
 2. Reinicie o Home Assistant.
 
 ---
@@ -244,17 +244,17 @@ Antes de adicionar a integração, é **fortemente recomendado** criar uma conta
 
 | Serviço | Descrição | Parâmetros |
 |---|---|---|
-| `intelbras_dvr.set_video_color` | Ajusta propriedades de imagem em um canal de câmera | `channel` (`1`–`32`), `brightness`, `contrast`, `hue`, `saturation`, `acutance` (`0`–`100`), `profile` (`0`=Dia, `1`=Noite, `2`=Normal) |
-| `intelbras_dvr.mask_camera` | Aplica ou remove máscara de privacidade (escurecimento total) | `channel` (`1`–`32`), `action` (`mask` / `unmask`) |
-| `intelbras_dvr.set_monitor_split` | Altera o modo de divisão do monitor físico HDMI/VGA | `mode` (`split1`, `split4`, `split8`, `split9`, `split16`, etc.), `group`, `channel` |
-| `intelbras_dvr.record_camera` | Altera a câmera para gravação manual por um período determinado | `channel` (`1`–`32`), `duration` (`5`–`3600` segundos) |
-| `intelbras_dvr.ptz_move` | Move uma câmera PTZ em uma direção com parada automática | `channel` (`1`–`32`), `direction`, `speed` (`1`–`8`), `duration` (`0.1`–`10.0`s) |
-| `intelbras_dvr.ptz_stop` | Interrompe o movimento PTZ em andamento | `channel` (`1`–`32`), `direction` |
-| `intelbras_dvr.ptz_preset` | Move a câmera PTZ para uma predefinição salva no hardware | `channel` (`1`–`32`), `preset` (`1`–`255`) |
-| `intelbras_dvr.get_logs` | Consulta registros estruturados de auditoria e eventos do sistema (incluindo `detail_fields` estruturado) | `count` (`1`–`100`), `log_type`, `start_time`, `end_time` |
-| `intelbras_dvr.get_config` | Lê qualquer tabela `configManager` do DVR pelo nome (retorna dados de resposta) | `name` (ex.: `MotionDetect`, `Encode`, `NTP`) |
-| `intelbras_dvr.set_config` | Grava diretamente um ou mais parâmetros `configManager` no DVR | `params` (mapa chave/valor; strings vazias limpam campos automaticamente) |
-| `intelbras_dvr.reboot` | Reinicializa o hardware do DVR | `entry_id` (opcional) |
+| `ha_intelbras_dvr.set_video_color` | Ajusta propriedades de imagem em um canal de câmera | `channel` (`1`–`32`), `brightness`, `contrast`, `hue`, `saturation`, `acutance` (`0`–`100`), `profile` (`0`=Dia, `1`=Noite, `2`=Normal) |
+| `ha_intelbras_dvr.mask_camera` | Aplica ou remove máscara de privacidade (escurecimento total) | `channel` (`1`–`32`), `action` (`mask` / `unmask`) |
+| `ha_intelbras_dvr.set_monitor_split` | Altera o modo de divisão do monitor físico HDMI/VGA | `mode` (`split1`, `split4`, `split8`, `split9`, `split16`, etc.), `group`, `channel` |
+| `ha_intelbras_dvr.record_camera` | Altera a câmera para gravação manual por um período determinado | `channel` (`1`–`32`), `duration` (`5`–`3600` segundos) |
+| `ha_intelbras_dvr.ptz_move` | Move uma câmera PTZ em uma direção com parada automática | `channel` (`1`–`32`), `direction`, `speed` (`1`–`8`), `duration` (`0.1`–`10.0`s) |
+| `ha_intelbras_dvr.ptz_stop` | Interrompe o movimento PTZ em andamento | `channel` (`1`–`32`), `direction` |
+| `ha_intelbras_dvr.ptz_preset` | Move a câmera PTZ para uma predefinição salva no hardware | `channel` (`1`–`32`), `preset` (`1`–`255`) |
+| `ha_intelbras_dvr.get_logs` | Consulta registros estruturados de auditoria e eventos do sistema (somente admin; inclui `detail_fields`) | `count` (`1`–`100`), `log_type`, `start_time`, `end_time` |
+| `ha_intelbras_dvr.get_config` | Lê qualquer tabela `configManager` do DVR pelo nome (somente admin; retorna dados de resposta) | `name` (ex.: `MotionDetect`, `Encode`, `NTP`) |
+| `ha_intelbras_dvr.set_config` | Grava diretamente um ou mais parâmetros `configManager` no DVR (somente admin) | `params` (mapa chave/valor; strings vazias limpam campos automaticamente) |
+| `ha_intelbras_dvr.reboot` | Reinicializa o hardware do DVR | `entry_id` (opcional) |
 
 > 💾 **Nota sobre Uso de Disco (`100%`):** DVRs Intelbras/Dahua pré-alocam 100% do espaço do HD na formatação para gravação circular. Exibir `100,0%` em `sensor.*_uso_de_disco` é normal — consulte os atributos `healthy` e `preallocated_disk` nos sensores de Status do HD e Uso de Disco para verificar a saúde real do disco.
 
@@ -276,7 +276,7 @@ folders:
   - id: gravacoes_dvr
     type: ha
     ha:
-      url: /media-browser/browser/app%2Cmedia-source%3A%2F%2Fintelbras_dvr%2FALLFILES%7C<ENTRY_ID>%7C<CH>%7C<YYYYMMDD>
+      url: /media-browser/browser/app%2Cmedia-source%3A%2F%2Fha_intelbras_dvr%2FALLFILES%7C<ENTRY_ID>%7C<CH>%7C<YYYYMMDD>
       path:
         - matchers:
             - type: title
